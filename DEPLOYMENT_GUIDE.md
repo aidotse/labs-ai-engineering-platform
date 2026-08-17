@@ -307,6 +307,14 @@ conda create -n ai-platform python=3.11 -y
 conda activate ai-platform
 
 sudo mkdir -p /opt/ai-platform && sudo chown admin:admin /opt/ai-platform
+
+# vllm-turboquant (1.1) needs Docker on this host -- not installed by the
+# ROCm/CUDA steps above. Without the group membership, every `docker`
+# command here fails with "permission denied ... docker.sock" unless
+# prefixed with sudo (and even sudo alone won't fix a missing install).
+sudo apt update && sudo apt install -y docker.io
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER   # log out/in (or `newgrp docker`) for this to take effect
 ```
 
 ### Linux CPU Hosts
@@ -406,7 +414,7 @@ Every automated step refuses to run against a placeholder value (`TBD`, `0`, any
 
 TurboQuant's KV-cache quantization — this fork's actual differentiator over stock vLLM — only activates on NVIDIA **RTX A6000/SM86** or **GB10/SM121** (confirmed in `docs/features/quantization/turboquant_a6000.md`). The real OpenShift GPU nodes are L4/L40S (SM89) or possibly AMD — neither qualifies, so this is "deploy vLLM 0.19," not a throughput upgrade, unless an A6000 gets added. Both `docker/Dockerfile` (CUDA) and `docker/Dockerfile.rocm` (ROCm) are real — pick the one matching `gpu_vendor` in `inventory.yaml`. If a node turns out to be Gaudi2, skip vllm-turboquant there entirely.
 
-**Build and push:**
+**Build.** No registry needed for this step, on either vendor — the image only needs to exist in the local Docker daemon on whichever host will actually run it (that's also all `deploy-platform.py`'s Phase 1.1 automation ever does: build and run in place over SSH, nothing pushed anywhere):
 
 ```bash
 cd /Users/laurianlamba/Gitlab/LocalProjects/mitko/mitkox-repos/vllm-turboquant
@@ -419,14 +427,6 @@ docker build -t vllm-turboquant:cuda \
   --build-arg CUDA_VERSION=12.9.1 \
   --build-arg PYTHON_VERSION=3.12 \
   -f docker/Dockerfile .
-
-docker tag vllm-turboquant:cuda \
-  image-registry.openshift-image-registry.svc:5000/ai-serving/vllm-turboquant:cuda
-# Replace the hostname above with the real registry Route from Prerequisites
-# -> OpenShift Cluster before running this -- the .svc name is
-# cluster-internal and won't resolve from outside the cluster.
-docker --config /tmp push \
-  image-registry.openshift-image-registry.svc:5000/ai-serving/vllm-turboquant:cuda
 ```
 
 *AMD/ROCm* (base image `rocm/vllm-dev:base`; set `PYTORCH_ROCM_ARCH` to your card's gfx target — run `rocminfo | grep gfx` to confirm, e.g. `gfx942` for MI300X, `gfx90a` for MI210/MI250):
@@ -435,9 +435,33 @@ docker --config /tmp push \
 docker build -t vllm-turboquant:rocm \
   --build-arg ARG_PYTORCH_ROCM_ARCH=gfx942 \
   -f docker/Dockerfile.rocm .
+```
 
-docker tag vllm-turboquant:rocm <your-registry>/vllm-turboquant:rocm
-docker push <your-registry>/vllm-turboquant:rocm
+**Run it directly** — the common case for both vendors: neither `linux-gpu-01`/`02` (NVIDIA) nor `linux-gpu-04` (AMD) in `inventory.yaml` are OpenShift nodes, they're standalone Linux boxes, so most deployments stop here:
+
+```bash
+# NVIDIA:
+docker run -d --name vllm-turboquant --gpus all -p 8000:8000 \
+  vllm-turboquant:cuda \
+  vllm serve <your-model-repo-or-path> --tensor-parallel-size 2 --host 0.0.0.0 --port 8000
+
+# AMD/ROCm:
+docker run -d --name vllm-turboquant \
+  --device=/dev/kfd --device=/dev/dri \
+  --group-add video --ipc=host --shm-size 16g \
+  -p 8000:8000 \
+  vllm-turboquant:rocm \
+  vllm serve <your-model-repo-or-path> --tensor-parallel-size 2 --host 0.0.0.0 --port 8000
+```
+
+**Only if deploying to the real OpenShift GPU nodes** (`ocp-worker-gpu-01`/`02` in `inventory.yaml` — a separate, optional path, not the default one above) does this need a registry at all. Tag and push to your registry's real Route hostname (from Prerequisites → OpenShift Cluster — `image-registry.openshift-image-registry.svc:5000` below is cluster-internal DNS and won't resolve from outside the cluster; replace it):
+
+```bash
+docker tag vllm-turboquant:cuda \
+  image-registry.openshift-image-registry.svc:5000/ai-serving/vllm-turboquant:cuda
+docker --config /tmp push \
+  image-registry.openshift-image-registry.svc:5000/ai-serving/vllm-turboquant:cuda
+# AMD equivalent: same pattern, tag :rocm instead of :cuda.
 ```
 
 **Deploy.** Entrypoint is the `vllm serve <model>` CLI. Real TurboQuant flags are `--kv-cache-dtype`, `--enable-turboquant`, `--turboquant-metadata-path`, and `--attention-backend TRITON_ATTN` (all four required together per the README's example) — meaningful only on A6000/GB10, omit on L4/L40S/AMD. The metadata file isn't shipped; generate it first:
@@ -530,22 +554,17 @@ spec:
   port: { targetPort: http }
 ```
 
-**Standalone alternative** — if the AMD box isn't OpenShift-attached (the common case), skip the YAML above entirely:
-
-```bash
-docker run -d --name vllm-turboquant \
-  --device=/dev/kfd --device=/dev/dri \
-  --group-add video --ipc=host --shm-size 16g \
-  -p 8000:8000 \
-  vllm-turboquant:rocm \
-  vllm serve <your-model-repo-or-path> --tensor-parallel-size 2 --host 0.0.0.0 --port 8000
-```
-
 ```bash
 oc apply -f openshift/vllm-turboquant-deployment.yaml
 oc rollout status deployment/vllm-turboquant -n ai-serving
 curl -s http://vllm-turboquant-ai-serving.apps.ocp.ai-platform.internal/health
 # Expected: {"status":"ok"}
+```
+
+If you ran it standalone instead (the common case, above), the health check is simpler — no `oc`, no Route:
+
+```bash
+curl -s http://<host>:8000/health
 ```
 
 ### 1.2 — ds4-zgx-gb10 ("DwarfStar") → Mac Workstations

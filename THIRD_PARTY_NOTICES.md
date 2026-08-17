@@ -66,13 +66,12 @@ license covering the accompanying model weights/paper, not source code).
 Treat the two independently — MIT terms for code, the DeepSeek Model License
 terms for anything derived from the model itself.
 
-**local-harness** is under a Custom Source Available License (copyright AI
-Sweden, not `mitkox` — it's a separate organization's repository, referenced
-here only because [Phase 7.8](DEPLOYMENT_GUIDE.md#phase-7--developer-tools)
-of the guide integrates with it). Personal, non-commercial use is
-unrestricted; **use by any company, organization, or institution — including
-internal tooling — requires prior written agreement with the copyright
-owner**, and no commercial benefit may be derived from it without one. This
-repository does not vendor local-harness's code, only a pointer to it at a
-specific commit, and the guide's own integration notes (Phase 7.8) carry
-this restriction forward for anyone following it.
+**local-harness** is also an AI Sweden project — the same organization
+publishing this repository — so referencing it here raises no cross-org
+question the way it would for a genuinely external dependency. It's still
+licensed independently under a Custom Source Available License, not MIT:
+personal, non-commercial use is unrestricted, while use by any other company,
+organization, or institution requires AI Sweden's prior written agreement.
+That applies to whoever clones this repo and wants to use local-harness on
+its own — this repository itself still only holds a submodule pointer to it,
+not a copy of its code, same as every other component above.

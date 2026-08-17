@@ -41,8 +41,8 @@ git submodule update --init --recursive
 
 The guide and the two scripts above are MIT-licensed — see
 [LICENSE](LICENSE). That license does not extend to any submodule; each one
-keeps its own license, set by its own author. See
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before redistributing,
-modifying, or using any of them — one in particular (`local-harness`)
-restricts organizational use without the copyright holder's written
-agreement.
+keeps its own license, set by its own author (local-harness is also an AI
+Sweden project, referenced the same way as everything else here). See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for each component's actual
+license before redistributing, modifying, or using any of them
+independently of this repository.
