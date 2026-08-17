@@ -372,8 +372,14 @@ def phase1_vllm_turboquant(ctx: Ctx) -> None:
         run_remote(ctx, user, ip, f"docker rm -f vllm-turboquant 2>/dev/null || true", check=False)
         run_remote(
             ctx, user, ip,
+            # No "vllm serve" here -- both Dockerfiles bake in
+            # ENTRYPOINT ["vllm", "serve"], so the image already supplies
+            # it. Repeating it makes the CLI parser see "vllm serve" as
+            # arguments to "vllm serve" (its own model positional filled
+            # with the literal string "vllm"), failing with "unrecognized
+            # arguments: serve <model>".
             f"docker run -d --name vllm-turboquant {run_args} -p 8000:8000 vllm-turboquant:{vendor} "
-            f"vllm serve {shlex.quote(model)} --tensor-parallel-size {tp_size} --host 0.0.0.0 --port 8000",
+            f"{shlex.quote(model)} --tensor-parallel-size {tp_size} --host 0.0.0.0 --port 8000",
         )
         print(f"vllm-turboquant started on {name}:8000 -- health check: curl -s http://{ip}:8000/health")
 

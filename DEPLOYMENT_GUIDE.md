@@ -445,13 +445,13 @@ docker build -t vllm-turboquant:rocm \
   -f docker/Dockerfile.rocm .
 ```
 
-**Run it directly** — the common case for both vendors: neither `linux-gpu-01`/`02` (NVIDIA) nor `linux-gpu-04` (AMD) in `inventory.yaml` are OpenShift nodes, they're standalone Linux boxes, so most deployments stop here:
+**Run it directly** — the common case for both vendors: neither `linux-gpu-01`/`02` (NVIDIA) nor `linux-gpu-04` (AMD) in `inventory.yaml` are OpenShift nodes, they're standalone Linux boxes, so most deployments stop here. **No `vllm serve` in these commands** — both Dockerfiles bake in `ENTRYPOINT ["vllm", "serve"]`, so the image already supplies it; repeating it makes the CLI parser choke with `unrecognized arguments: serve <model>` (confirmed against a real build):
 
 ```bash
 # NVIDIA:
 docker run -d --name vllm-turboquant --gpus all -p 8000:8000 \
   vllm-turboquant:cuda \
-  vllm serve <your-model-repo-or-path> --tensor-parallel-size 2 --host 0.0.0.0 --port 8000
+  <your-model-repo-or-path> --tensor-parallel-size 2 --host 0.0.0.0 --port 8000
 
 # AMD/ROCm:
 docker run -d --name vllm-turboquant \
@@ -459,7 +459,7 @@ docker run -d --name vllm-turboquant \
   --group-add video --ipc=host --shm-size 16g \
   -p 8000:8000 \
   vllm-turboquant:rocm \
-  vllm serve <your-model-repo-or-path> --tensor-parallel-size 2 --host 0.0.0.0 --port 8000
+  <your-model-repo-or-path> --tensor-parallel-size 2 --host 0.0.0.0 --port 8000
 ```
 
 **Only if deploying to the real OpenShift GPU nodes** (`ocp-worker-gpu-01`/`02` in `inventory.yaml` — a separate, optional path, not the default one above) does this need a registry at all. Tag and push to your registry's real Route hostname (from Prerequisites → OpenShift Cluster — `image-registry.openshift-image-registry.svc:5000` below is cluster-internal DNS and won't resolve from outside the cluster; replace it):
@@ -2058,7 +2058,7 @@ Every component in this workspace, one entry each: what it is, what it actually 
 ```bash
 docker run -d --name vllm-turboquant --device=/dev/kfd --device=/dev/dri \
   --group-add video --ipc=host --shm-size 16g -p 8000:8000 \
-  vllm-turboquant:rocm vllm serve <model> --tensor-parallel-size 2 --host 0.0.0.0 --port 8000
+  vllm-turboquant:rocm <model> --tensor-parallel-size 2 --host 0.0.0.0 --port 8000
 ```
 No rlmgw, no Envoy, no `inventory.yaml` entry required — `curl http://<host>:8000/v1/chat/completions` works immediately. Full deploy: [Phase 1.1](#phase-1--model-serving).
 
