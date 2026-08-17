@@ -79,27 +79,27 @@ def main() -> int:
         lines.append("")
 
     for host in inv.get("linux_gpu_hosts", []):
-        if "vllm-turboquant" in host.get("services", []):
+        if "vllm" in host.get("services", []):
             name = slug(host["hostname"])
             lines.append(f'{name}_VLLM_URL=http://{host["ip"]}:8000')
     lines.append("")
 
     oc = inv.get("openshift_cluster", {})
     api_url = oc.get("api_url", "")
-    if api_url and "vllm-turboquant" in (
+    if api_url and "vllm" in (
         oc.get("namespaces", {}).get("serving", {}).get("services", [])
     ):
         # Best-effort Route hostname from the naming convention this guide
         # uses elsewhere (<service>-<namespace>.apps.<cluster-domain>) --
         # this is a guess at the pattern, NOT a lookup. Confirm with
-        # `oc get route vllm-turboquant -n ai-serving` before trusting it.
+        # `oc get route vllm -n ai-serving` before trusting it.
         cluster_domain = api_url.split("://api.", 1)[-1].split(":")[0] if "://api." in api_url else None
         if cluster_domain:
             lines.append(
                 f"# Best-effort guess from the api.{cluster_domain} naming pattern -- "
-                f"confirm with: oc get route vllm-turboquant -n ai-serving"
+                f"confirm with: oc get route vllm -n ai-serving"
             )
-            lines.append(f"OPENSHIFT_VLLM_URL=http://vllm-turboquant-ai-serving.apps.{cluster_domain}")
+            lines.append(f"OPENSHIFT_VLLM_URL=http://vllm-ai-serving.apps.{cluster_domain}")
             lines.append("")
 
     out_path = pathlib.Path(".env.platform")

@@ -314,11 +314,21 @@ def hosts_running(ctx: Ctx, service: str) -> list[dict]:
 # Phase 1 — Model Serving
 # ---------------------------------------------------------------------------
 
-def phase1_vllm_turboquant(ctx: Ctx) -> None:
-    section("Phase 1.1 — vllm-turboquant")
-    targets = hosts_running(ctx, "vllm-turboquant")
+NATIVE_VLLM_IMAGES = {
+    # Both confirmed to exist on Docker Hub. No entry for "intel"
+    # (Gaudi/Habana): no pre-built image exists for it anywhere; that needs
+    # its own from-source build (HabanaAI/vllm-fork or upstream vLLM's
+    # requirements/hpu.txt), not something this script automates.
+    "nvidia": "vllm/vllm-openai:latest",
+    "amd": "rocm/vllm:rocm7.14.0_rdna_ubuntu24.04_py3.14_pytorch_2.11.0_vllm_0.23.0",
+}
+
+
+def phase1_model_serving(ctx: Ctx) -> None:
+    section("Phase 1.1 — Model Serving (native vLLM)")
+    targets = hosts_running(ctx, "vllm")
     if not targets:
-        print("No host in inventory.yaml lists vllm-turboquant as a service. Skipping.")
+        print("No host in inventory.yaml lists vllm as a service. Skipping.")
         return
     for host in targets:
         name, ip, user = host["hostname"], host["ip"], host["_ssh_user"]
@@ -328,60 +338,40 @@ def phase1_vllm_turboquant(ctx: Ctx) -> None:
         print(f"\n-- {name} ({ip}), gpu_vendor={vendor} --")
         require_ssh(ctx, user, ip, name)
 
-        if vendor == "amd":
-            arch = ask(f"PYTORCH_ROCM_ARCH for {name} (run `rocminfo | grep gfx` on that host to confirm)", "gfx1100")
-            dockerfile, build_arg = "docker/Dockerfile.rocm", f"ARG_PYTORCH_ROCM_ARCH={arch}"
-            run_args = "--device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --shm-size 16g"
-        elif vendor == "nvidia":
-            dockerfile, build_arg = "docker/Dockerfile", "CUDA_VERSION=12.9.1 --build-arg PYTHON_VERSION=3.12"
-            run_args = "--gpus all"
-        else:
-            print(f"gpu_vendor={vendor!r} has no vllm-turboquant Dockerfile (Habana/SynapseAI isn't supported by this fork). Skipping {name}.")
+        if vendor not in NATIVE_VLLM_IMAGES:
+            print(f"gpu_vendor={vendor!r} has no known native-vLLM image here -- Habana/Gaudi "
+                  f"needs a separate from-source build (HabanaAI/vllm-fork or requirements/hpu.txt), "
+                  f"not a Docker Hub pull. See DEPLOYMENT_GUIDE.md Phase 1.1. Skipping {name}.")
             continue
 
-        model = ask("Model to serve (any HF repo — see 'Choosing Models for Your Hardware' in the guide)", "<your-model-repo-or-path>")
+        model = ask("Model to serve (any HF repo -- check 'Which quantization format actually works "
+                    "on your GPU' in the guide before picking an FP8-tagged one on hardware that "
+                    "can't use it)", "<your-model-repo-or-path>")
         tp_size = ask("--tensor-parallel-size", str(host.get("gpu_count") or 1))
+        image = ask(f"vLLM image for {vendor}", NATIVE_VLLM_IMAGES[vendor])
+        run_args = ("--device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --shm-size 16g"
+                    if vendor == "amd" else "--gpus all")
 
-        if not confirm(ctx, f"Build the {vendor} image directly on {name} and run vllm-turboquant there on :8000?"):
+        if not confirm(ctx, f"Pull {image} on {name} and run it there on :8000?"):
             print(f"Skipped {name}.")
             continue
 
-        remote_dir = f"{ctx.inv['global']['remote_base_path']}/vllm-turboquant"
-        remote_build = f"cd {remote_dir} && docker build -t vllm-turboquant:{vendor} --build-arg {build_arg} -f {dockerfile} ."
-
-        # vLLM's setup.py derives its version from git history via
-        # setuptools_scm -- a plain rsync (which has to exclude .git; syncing
-        # a submodule's raw .git *pointer* file wouldn't help either, since
-        # it resolves to a path outside the docker build context) leaves the
-        # remote copy with no usable git metadata, and the build fails with
-        # "setuptools-scm was unable to detect version". A bundle transfers
-        # real, self-contained history instead, resolving correctly whether
-        # the local copy is a plain clone or a submodule checkout. This only
-        # bundles up to the local HEAD commit -- uncommitted local edits to
-        # vllm-turboquant are not deployed, matching this script's build
-        # elsewhere from a defined git state rather than scratch changes.
-        local_vllm_dir = f"{ctx.inv['global']['local_repo_root']}/vllm-turboquant"
-        bundle_path = REPO_ROOT / ".vllm-turboquant.bundle"
-        run_local(f"git -C {shlex.quote(local_vllm_dir)} bundle create {bundle_path} HEAD")
-        run_remote(ctx, user, ip, f"rm -rf {remote_dir}")
-        run_local(f"scp {scp_identity_prefix(ctx)}{bundle_path} {user}@{ip}:/tmp/vllm-turboquant.bundle")
-        run_remote(ctx, user, ip, f"git clone /tmp/vllm-turboquant.bundle {remote_dir} && rm -f /tmp/vllm-turboquant.bundle")
-        bundle_path.unlink(missing_ok=True)
-        run_remote(ctx, user, ip, remote_build)
-
-        run_remote(ctx, user, ip, f"docker rm -f vllm-turboquant 2>/dev/null || true", check=False)
+        run_remote(ctx, user, ip, f"docker pull {image}")
+        run_remote(ctx, user, ip, "docker rm -f vllm 2>/dev/null || true", check=False)
         run_remote(
             ctx, user, ip,
-            # No "vllm serve" here -- both Dockerfiles bake in
-            # ENTRYPOINT ["vllm", "serve"], so the image already supplies
-            # it. Repeating it makes the CLI parser see "vllm serve" as
-            # arguments to "vllm serve" (its own model positional filled
-            # with the literal string "vllm"), failing with "unrecognized
-            # arguments: serve <model>".
-            f"docker run -d --name vllm-turboquant {run_args} -p 8000:8000 vllm-turboquant:{vendor} "
+            # No "vllm serve" here -- confirmed the AMD RDNA image already
+            # bakes in ENTRYPOINT ["vllm", "serve"]; not independently
+            # verified for every possible image someone might type at the
+            # prompt above, so check its actual entrypoint if this fails
+            # with "unrecognized arguments: serve <model>".
+            f"docker run -d --name vllm {run_args} -p 8000:8000 {image} "
             f"{shlex.quote(model)} --tensor-parallel-size {tp_size} --host 0.0.0.0 --port 8000",
         )
-        print(f"vllm-turboquant started on {name}:8000 -- health check: curl -s http://{ip}:8000/health")
+        print(f"vllm started on {name}:8000 via {image} -- if it fails with "
+              f"'unrecognized arguments: serve <model>', check that image's actual entrypoint with "
+              f"`docker inspect --format='{{{{.Config.Entrypoint}}}}' {image}` and adjust. "
+              f"Health check: curl -s http://{ip}:8000/health")
 
 
 def phase1_ds4(ctx: Ctx) -> None:
@@ -543,7 +533,7 @@ def _build_envoy_backends(ctx: Ctx) -> tuple[list[dict], list[dict]]:
     """
     vllm_backends, ollama_backends = [], []
     for h in ctx.inv.get("linux_gpu_hosts", []):
-        if "vllm-turboquant" in h.get("services", []):
+        if "vllm" in h.get("services", []):
             vllm_backends.append({"name": h["hostname"].replace("-", "_"), "address": h["ip"], "port": 8000,
                                    "health": "/health", "cluster_type": "STATIC"})
     for n in ctx.inv.get("jetson_nodes", {}).get("nodes", []):
@@ -567,10 +557,10 @@ def phase2_envoy(ctx: Ctx) -> None:
 
     vllm_backends, ollama_backends = _build_envoy_backends(ctx)
     if not vllm_backends and not ollama_backends:
-        print("No host in inventory.yaml runs vllm-turboquant or ollama -- nothing to route to. Skipping Envoy.")
+        print("No host in inventory.yaml runs vllm or ollama -- nothing to route to. Skipping Envoy.")
         return
 
-    print(f"Discovered from inventory.yaml: {len(vllm_backends)} vllm-turboquant backend(s), "
+    print(f"Discovered from inventory.yaml: {len(vllm_backends)} vllm backend(s), "
           f"{len(ollama_backends)} ollama/ds4 backend(s).")
     token = ask("Bearer token for Envoy clients to present (this is a secret -- don't reuse one from elsewhere)", "sk-REPLACE-ME")
 
@@ -876,7 +866,7 @@ def guided_checklist(ctx: Ctx, key: str) -> None:
 # ---------------------------------------------------------------------------
 
 AUTOMATED: dict[str, tuple[str, callable]] = {
-    "1.1": ("vllm-turboquant", phase1_vllm_turboquant),
+    "1.1": ("vllm (native)", phase1_model_serving),
     "1.2": ("ds4-zgx-gb10", phase1_ds4),
     "1.3": ("Ollama binding", phase1_ollama),
     "2.1": ("Envoy", phase2_envoy),

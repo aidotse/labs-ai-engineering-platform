@@ -1,6 +1,6 @@
 # AI Engineering Platform — Deployment Guide
 
-A local-first AI engineering platform assembled from 24 independent repos (`github.com/mitkox`) plus one added component: Envoy, used as the unifying gateway (replacing an earlier LiteLLM-based design). Every command in this guide has been checked against the real source of the repo it deploys — not assumed from a README. Where a repo behaves differently from what its own documentation implies, that's called out inline, once, at the point where it matters.
+A local-first AI engineering platform assembled from 23 independent repos (`github.com/mitkox`) plus one added component: Envoy, used as the unifying gateway (replacing an earlier LiteLLM-based design). Every command in this guide has been checked against the real source of the repo it deploys — not assumed from a README. Where a repo behaves differently from what its own documentation implies, that's called out inline, once, at the point where it matters.
 
 **This guide's commands are the source of truth; `deploy-platform.py` is a convenience layer on top of them, not a replacement.** No script here provisions a host, installs a base OS, or sets up SSH access — every host must already exist and already accept your key before you start. Within that boundary, `deploy-platform.py` *does* read `inventory.yaml` and chain several phases together (1, 2, 4, 6.3, 7.8 — see [Automated Deployment](#automated-deployment-human-in-the-loop)), each step gated behind a confirmation prompt before it builds an image, restarts a shared service, or touches a placeholder host. Everything else in this guide (Phase 3, 5, most of 6 and 7) is still copy-paste-by-hand, one command at a time. See [Prerequisites by Host Type](#prerequisites-by-host-type) for exactly what "already set up" needs to mean before Phase 1.
 
@@ -71,7 +71,7 @@ Everything else — sandboxing, security scanning, model optimization, the edge 
 │                                                                             │
 │  🔀 linux-cpu-01 (10.0.4.10)         ☸️  OpenShift Cluster (L4/L40S,      │
 │  ├── Envoy :4000 — unifying gw             maybe Gaudi2 — confirm which)  │
-│  │   model routing + auto-failover   ├── vllm-turboquant :8000            │
+│  │   model routing + auto-failover   ├── vllm :8000                       │
 │  ├── rlmgw :8010 — one backend,      ├── sonic :9000 (WS gateway)         │
 │  │   one repo, adds context          ├── fabrica :8080 (Kata sandbox)     │
 │  ├── ain-node :8787/:4001            └── background-coding-agents,        │
@@ -80,7 +80,7 @@ Everything else — sandboxing, security scanning, model optimization, the edge 
 │                                                                             │
 │  🐧 Linux GPU (10.0.3.x): L40S/L4 (SDFT, sparser-faster-llms — adapted    │
 │      for CUDA 12.x, Phase 5) + Gaudi2 (idle, no repo supports Habana) +   │
-│      AMD (vllm-turboquant via ROCm build)                                 │
+│      AMD (vLLM via ROCm)                                                  │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -88,11 +88,11 @@ Everything else — sandboxing, security scanning, model optimization, the edge 
 
 ## GPU Vendor Support Matrix
 
-The real fleet is **NVIDIA L4, NVIDIA L40S, Intel Gaudi2, and AMD** (model TBD) — check `inventory.yaml` for which host has which. Use this table before running any Phase 1 or Phase 5 step on a given host.
+Don't assume datacenter-class hardware — the GPUs an actual deployer has access to skew heavily toward workstation and inference cards: Tesla T4 / Quadro RTX 5000 (Turing), L4 / A30 (Ada/Ampere), Radeon PRO W7900 (RDNA3), occasionally something like Gaudi2. Only some of these have real FP8 support — see [Choosing Models for Your Hardware](#choosing-models-for-your-hardware) below for exactly which. Check `inventory.yaml` for which host has which vendor/model, and use this table before running any Phase 1 or Phase 5 step on it.
 
 | Repo | NVIDIA (CUDA) | AMD (ROCm) | Intel (Habana/Gaudi) | Apple (Metal/CoreML) | Notes |
 |---|---|---|---|---|---|
-| `vllm-turboquant` | ✅ Yes | ✅ Yes | ❌ No | ❌ No | Real Dockerfiles for both (`docker/Dockerfile`, `docker/Dockerfile.rocm`). The fork's namesake feature — TurboQuant KV-cache quantization — only activates on NVIDIA **RTX A6000/SM86** or **GB10/SM121**; L4/L40S are Ada (**SM89**), so it's inactive on the real fleet too, same as on AMD. Treat it as plain vLLM 0.19 unless an A6000 is added. No Habana build exists — **Gaudi2 has no serving path here.** |
+| `vllm` (native, Phase 1.1) | ✅ Yes — official `vllm/vllm-openai` image | ✅ Yes — official `rocm/vllm` RDNA image | ⚠️ No pre-built image; separate from-source build | ❌ No | Official, pre-built images for both NVIDIA and AMD — confirmed to exist on Docker Hub, see [Phase 1.1](#phase-1--model-serving). Gaudi2 needs its own build from `HabanaAI/vllm-fork` or upstream vLLM's `requirements/hpu.txt` — no pre-built image exists for it as of this writing. |
 | `ds4-zgx-gb10` (DwarfStar) | ⚠️ Builds, likely can't serve | ⚠️ Builds, likely can't serve | ❌ No | ⚠️ Primary target, but see caveat | **Builds on both NVIDIA (`make cuda-spark` for GB10, `make cuda-generic` for any local CUDA GPU — genuinely broader than AMD, which has no generic ROCm path at all, only `gfx1151`/Strix Halo) and Metal — but confirmed from `download_model.sh --help`, every model this project ships is far larger than typical desktop/laptop/edge memory: DeepSeek V4 Flash's smallest quant (`q2-imatrix`) is already 81GB on disk, "recommended for 96 and 128GB RAM machines"; PRO variants are 412–430GB; GLM-5.2's officially-validated quants (the only ones scored against the project's own test fixture) are 262–434GB.** There is no documented model variant that fits under roughly 80GB of usable memory — not on a 16–48GB GPU, not on a 32GB Jetson, not on a 16–32GB Mac laptop. This is only realistic on a genuinely high-memory machine (96GB+ unified-memory Mac Studio, or true GB10/DGX-Spark-class hardware) — treat as **not deployable** on typical laptop/workstation/edge-class hardware regardless of vendor. |
 | `SDFT` | ✅ Adaptable | ❌ No | ❌ No | ❌ No | Ships only nightly-CUDA-13.1/GB10 instructions; adapted here for stable CUDA 12.x on L4/L40S (Phase 5.1) — treat as untested, not confirmed-working. |
 | `sparser-faster-llms` | ⚠️ Uncertain on L4/L40S | ❌ No | ❌ No | ❌ No | Custom CUDA kernels documented as "designed for H100 GPUs" (Hopper, SM90). L4/L40S are Ada (SM89) — may be a real architecture mismatch, not just a version gap. |
@@ -111,7 +111,7 @@ Only two components in this platform let you pick your own model — everything 
 
 | Component | Model choice? |
 |---|---|
-| **vllm-turboquant** (Phase 1.1) | Yes — any Hugging Face repo, passed straight to `vllm serve` |
+| **vLLM (native)** (Phase 1.1) | Yes — any Hugging Face repo, passed straight to `vllm serve` |
 | **Ollama** (Phase 1.3, also usable on Mac) | Yes — anything in Ollama's library, or an imported GGUF |
 | **SDFT** (Phase 5.1) | Partial — the student is a free choice via `--model_name_or_path`; the teacher is whatever you point `--vllm_server_base_url` at |
 | `ds4-zgx-gb10` (Phase 1.2) | **No** — hardcoded to the specific DeepSeek V4/GLM-5.2 GGUFs `download_model.sh` fetches. Moot anyway on hardware under ~96GB — see the matrix above |
@@ -127,9 +127,24 @@ model size (GB) ≈ params (billions) × bytes-per-parameter
 | Precision | Bytes/param | Where you'd use it |
 |---|---|---|
 | FP16/BF16 | 2.0 | `vllm serve`'s default when the model has no quant in its name |
-| FP8 | 1.0 | `vllm serve --quantization fp8` (Ada/Hopper-class GPUs and newer) |
+| FP8 | 1.0 | `vllm serve --quantization fp8` — **only on GPU generations that actually support it, see below** |
 | INT8 / Q8_0 | 1.0 | Ollama's `q8_0` tag; AWQ/GPTQ 8-bit |
 | Q4_K_M / AWQ / GPTQ 4-bit | ~0.55–0.6 | The default "good quality, small footprint" choice for both vLLM and Ollama |
+
+### Which quantization format actually works on your GPU
+
+FP8 needs real hardware tensor-core support, not just enough VRAM — picking an FP8-tagged model on a GPU generation that doesn't have it either fails outright or silently falls back to a slower path. Confirmed against NVIDIA's own architecture documentation:
+
+| GPU generation | Example cards | Native FP8? | Use instead |
+|---|---|---|---|
+| Turing (SM75) | Tesla T4, Quadro RTX 5000, RTX 20-series | **No** — INT8/INT4 only, no FP8 tensor cores | AWQ, GPTQ, or `Q4_K_M`/`Q8_0` (Ollama) |
+| Ampere (SM80/86) | A30, A100, RTX A6000, RTX 30-series | **No native FP8** — TF32/BF16 native; weight-only FP8 works via Marlin kernels, full FP8 compute does not | BF16/FP16, or AWQ/GPTQ |
+| Ada Lovelace (SM89) | L4, L40S, RTX 40-series | **Yes** — full FP8 support | FP8-tagged models work natively; this is the sweet spot for FP8 in most real fleets |
+| Hopper (SM90) | H100, H200 | **Yes** — first-generation Transformer Engine, dedicated FP8 tensor cores | FP8-tagged models, best-supported generation |
+| RDNA3 (AMD) | Radeon PRO W7900, RX 7900 series | **Yes** — confirmed working against a real deployment in this guide's own Phase 1.1 | FP8-tagged models work; use native vLLM's AMD RDNA image, not this fork |
+| RDNA2 (AMD) | Radeon PRO W6800, RX 6000 series | Unconfirmed — check AMD's current ROCm docs before relying on it | Assume AWQ/GPTQ/BF16 unless you've confirmed otherwise |
+
+If you're not sure which generation a card is, check its compute capability (`nvidia-smi --query-gpu=compute_cap --format=csv` on NVIDIA) or architecture name (`rocminfo | grep gfx` on AMD) against the table above before picking a model's quantization tag — not after a deployment fails.
 
 ### What that means for your specific fleet
 
@@ -146,7 +161,7 @@ Starting points, not guarantees — always confirm against the specific model ca
 
 ### Picking a model per component
 
-**vllm-turboquant** — pass any repo to `vllm serve`, and set `--max-model-len` deliberately (the default is often the model's full trained context, which may not fit your budget even if the weights do):
+**vLLM (native)** — pass any repo to `vllm serve`, and set `--max-model-len` deliberately (the default is often the model's full trained context, which may not fit your budget even if the weights do):
 
 ```bash
 vllm serve Qwen/Qwen2.5-14B-Instruct-AWQ --tensor-parallel-size 1 --max-model-len 8192
@@ -169,7 +184,7 @@ ollama pull llama3.1:8b     # ~4.9GB
 
 Nothing here is a strict pipeline — see [Architecture](#architecture). This section is the practical version: what to build first, what each later phase actually needs, and what happens if you stop early.
 
-**Minimum useful deployment: Phase 1, one backend, nothing else.** Build `vllm-turboquant` on whatever GPU you have, or use Ollama (Phase 1.3) on modest hardware, and you have a working OpenAI-compatible endpoint. `ds4-zgx-gb10` is Phase 1's third option but needs ~96GB+ RAM for even its smallest model — see the [GPU Vendor Support Matrix](#gpu-vendor-support-matrix) before counting on it. Every other phase is additive from there.
+**Minimum useful deployment: Phase 1, one backend, nothing else.** Run native vLLM on whatever GPU you have, or use Ollama (Phase 1.3) on modest hardware, and you have a working OpenAI-compatible endpoint. `ds4-zgx-gb10` is Phase 1's third option but needs ~96GB+ RAM for even its smallest model — see the [GPU Vendor Support Matrix](#gpu-vendor-support-matrix) before counting on it. Every other phase is additive from there.
 
 | Phase | Needs before it | Skippable? | What you lose if you skip it |
 |---|---|---|---|
@@ -308,7 +323,7 @@ conda activate ai-platform
 
 sudo mkdir -p /opt/ai-platform && sudo chown admin:admin /opt/ai-platform
 
-# vllm-turboquant (1.1) needs Docker on this host -- not installed by the
+# Model serving (1.1) needs Docker on this host -- not installed by the
 # ROCm/CUDA steps above. Without the group membership, every `docker`
 # command here fails with "permission denied ... docker.sock" unless
 # prefixed with sudo (and even sudo alone won't fix a missing install).
@@ -381,7 +396,7 @@ chmod +x deploy.sh
 
 Two scripts at the repo root automate parts of the phases below — built strictly from the same commands documented in each phase section, not a separate implementation. If the two ever disagree, the phase sections are the source of truth.
 
-**`generate-env.py`** — reads `inventory.yaml`, writes `.env.platform` with every resource's real connection URL (Envoy, rlmgw, each Jetson's Ollama, each vllm-turboquant-bearing host) derived once instead of hand-copied into every tool's config. It never touches a secret — bearer tokens/API keys aren't in `inventory.yaml` to begin with (see [Where Configuration Actually Lives](#where-configuration-actually-lives)), so those lines come out as clearly marked placeholders. Read-only against `inventory.yaml`; it only ever writes `.env.platform`.
+**`generate-env.py`** — reads `inventory.yaml`, writes `.env.platform` with every resource's real connection URL (Envoy, rlmgw, each Jetson's Ollama, each vLLM-serving host) derived once instead of hand-copied into every tool's config. It never touches a secret — bearer tokens/API keys aren't in `inventory.yaml` to begin with (see [Where Configuration Actually Lives](#where-configuration-actually-lives)), so those lines come out as clearly marked placeholders. Read-only against `inventory.yaml`; it only ever writes `.env.platform`.
 
 ```bash
 pip3 install pyyaml
@@ -391,7 +406,7 @@ python3 generate-env.py
 
 **`deploy-platform.py`** — the actual orchestrator, with a hard scope boundary stated plainly rather than blurred:
 
-- **Genuinely automated** (runs real build/SSH/deploy commands, with a confirmation prompt before anything that builds an image, restarts a shared service, or targets a host whose `inventory.yaml` entry is still a placeholder): Phase 1 (vllm-turboquant, ds4-zgx-gb10, Ollama binding), Phase 2 (Envoy — including *generating* `envoy.yaml`'s backend list from whatever `inventory.yaml` currently says runs where, so adding or removing a GPU host and re-running this regenerates the routing instead of hand-editing YAML; rlmgw), Phase 4 (aegis), Phase 6.3 (ain-node), Phase 7.8 (local-harness's lane wiring).
+- **Genuinely automated** (runs real build/SSH/deploy commands, with a confirmation prompt before anything that builds an image, restarts a shared service, or targets a host whose `inventory.yaml` entry is still a placeholder): Phase 1 (native vLLM, ds4-zgx-gb10, Ollama binding), Phase 2 (Envoy — including *generating* `envoy.yaml`'s backend list from whatever `inventory.yaml` currently says runs where, so adding or removing a GPU host and re-running this regenerates the routing instead of hand-editing YAML; rlmgw), Phase 4 (aegis), Phase 6.3 (ain-node), Phase 7.8 (local-harness's lane wiring).
 - **Guided checklist only** — prints each real command, asks you to confirm before moving to the next, executes nothing on its own: Phase 3.1 (fabrica — Kata-operator cluster prep is a cluster-wide decision, not something a script should make silently), Phase 5.1/5.2 (SDFT/sparser-faster-llms — these are real, resource-consuming training runs; starting one is a decision you make deliberately, not a side effect of running a deploy script), Phase 6.1 (oda — genuinely can't be scripted, it's fully interactive with no working non-interactive flags), Phase 7.5 (omarchy-ai — interactive installer with a reboot in the middle).
 - **Not covered at all**: the remaining Phase 3/6/7 components. They're simple enough (a handful of flags, no per-host fleet iteration) that the phase section itself is the fastest path — run `--list` for the current, authoritative breakdown rather than trusting this paragraph as it ages.
 
@@ -410,104 +425,85 @@ Every automated step refuses to run against a placeholder value (`TBD`, `0`, any
 
 **Goal:** an OpenAI-compatible endpoint on each tier of the fleet. **Depends on:** nothing but the target hardware. **Skippable:** no — this is what every other phase ultimately talks to.
 
-### 1.1 — vllm-turboquant → OpenShift (NVIDIA) or any ROCm host (AMD)
+### 1.1 — Model Serving: native vLLM → OpenShift or any Linux GPU host
 
-TurboQuant's KV-cache quantization — this fork's actual differentiator over stock vLLM — only activates on NVIDIA **RTX A6000/SM86** or **GB10/SM121** (confirmed in `docs/features/quantization/turboquant_a6000.md`). The real OpenShift GPU nodes are L4/L40S (SM89) or possibly AMD — neither qualifies, so this is "deploy vLLM 0.19," not a throughput upgrade, unless an A6000 gets added. Both `docker/Dockerfile` (CUDA) and `docker/Dockerfile.rocm` (ROCm) are real — pick the one matching `gpu_vendor` in `inventory.yaml`. If a node turns out to be Gaudi2, skip vllm-turboquant there entirely.
-
-**If you cloned this platform repo with submodules:** `vllm-turboquant/.git` is a small pointer file (`gitdir: ../.git/modules/vllm-turboquant`), not a real git directory — normal for a submodule, but `docker build .` run from inside it only sends that directory as build context, so the pointer's actual target never reaches the image. vLLM's `setup.py` derives its version from git history via `setuptools_scm`; with no usable git metadata inside the container it fails with `setuptools-scm was unable to detect version`. Fix, once, right after cloning — no separate clone needed, this stays inside the one checkout:
+Both NVIDIA and AMD publish official, pre-built vLLM images — no build step, and no registry push needed if the target host can reach Docker Hub directly:
 
 ```bash
-./fix-submodules-git.sh
+# NVIDIA/CUDA:
+docker pull vllm/vllm-openai:latest
+
+# AMD/RDNA (Radeon PRO/RX workstation and consumer cards):
+docker pull rocm/vllm:rocm7.14.0_rdna_ubuntu24.04_py3.14_pytorch_2.11.0_vllm_0.23.0
 ```
 
-This materializes a real, self-contained `.git` directory inside every submodule (each copied from the superproject's `.git/modules/<name>`, with the now-incorrect `core.worktree` back-reference stripped) — not just `vllm-turboquant`, since nothing rules out another of the 26 components hitting the same class of problem later. Safe to re-run — a no-op for whatever's already done. After this, `docker build .` from inside `vllm-turboquant/` works normally. `deploy-platform.py`'s own Phase 1.1 automation doesn't need this — it transfers a `git bundle` to the remote host instead of a plain rsync, so the remote build always gets real git history regardless of how the local copy was checked out.
-
-**Build.** No registry needed for this step, on either vendor — the image only needs to exist in the local Docker daemon on whichever host will actually run it (that's also all `deploy-platform.py`'s Phase 1.1 automation ever does: build and run in place over SSH, nothing pushed anywhere):
+Check what each image bakes into its entrypoint before writing a run command — confirmed the hard way that guessing wrong here produces `unrecognized arguments: serve <model>`:
 
 ```bash
-cd /Users/laurianlamba/Gitlab/LocalProjects/mitko/mitkox-repos/vllm-turboquant
+docker inspect --format='{{.Config.Entrypoint}}' <image>
 ```
 
-*NVIDIA:*
+Then run it. Pick a model whose quantization tag actually matches the GPU's generation — see [Which quantization format actually works on your GPU](#which-quantization-format-actually-works-on-your-gpu) before choosing an FP8-tagged repo on hardware that can't use it:
 
 ```bash
-docker build -t vllm-turboquant:cuda \
-  --build-arg CUDA_VERSION=12.9.1 \
-  --build-arg PYTHON_VERSION=3.12 \
-  -f docker/Dockerfile .
-```
+# NVIDIA -- if the image's own entrypoint doesn't already supply "vllm serve"
+# (check with the docker inspect command above), prefix the args below with it:
+docker run -d --name vllm --gpus all -p 8000:8000 \
+  vllm/vllm-openai:latest \
+  <your-model-repo-or-path> --tensor-parallel-size 1 --host 0.0.0.0 --port 8000
 
-*AMD/ROCm* (base image `rocm/vllm-dev:base`; set `PYTORCH_ROCM_ARCH` to your card's gfx target — run `rocminfo | grep gfx` to confirm, e.g. `gfx942` for MI300X, `gfx90a` for MI210/MI250):
-
-```bash
-docker build -t vllm-turboquant:rocm \
-  --build-arg ARG_PYTORCH_ROCM_ARCH=gfx942 \
-  -f docker/Dockerfile.rocm .
-```
-
-**Run it directly** — the common case for both vendors: neither `linux-gpu-01`/`02` (NVIDIA) nor `linux-gpu-04` (AMD) in `inventory.yaml` are OpenShift nodes, they're standalone Linux boxes, so most deployments stop here. **No `vllm serve` in these commands** — both Dockerfiles bake in `ENTRYPOINT ["vllm", "serve"]`, so the image already supplies it; repeating it makes the CLI parser choke with `unrecognized arguments: serve <model>` (confirmed against a real build):
-
-```bash
-# NVIDIA:
-docker run -d --name vllm-turboquant --gpus all -p 8000:8000 \
-  vllm-turboquant:cuda \
-  <your-model-repo-or-path> --tensor-parallel-size 2 --host 0.0.0.0 --port 8000
-
-# AMD/ROCm:
-docker run -d --name vllm-turboquant \
+# AMD/RDNA -- if the fleet has more than one GPU generation, pin to one
+# explicitly rather than letting tensor-parallel span them: confirmed that
+# splitting a model across two different architectures (e.g. RDNA3 + RDNA2)
+# segfaults during a basic kernel launch, not a subtle failure:
+docker run -d --name vllm \
   --device=/dev/kfd --device=/dev/dri \
   --group-add video --ipc=host --shm-size 16g \
+  -e HIP_VISIBLE_DEVICES=0 \
   -p 8000:8000 \
-  vllm-turboquant:rocm \
-  <your-model-repo-or-path> --tensor-parallel-size 2 --host 0.0.0.0 --port 8000
+  rocm/vllm:rocm7.14.0_rdna_ubuntu24.04_py3.14_pytorch_2.11.0_vllm_0.23.0 \
+  <your-model-repo-or-path> --tensor-parallel-size 1 --host 0.0.0.0 --port 8000
 ```
 
-**Only if deploying to the real OpenShift GPU nodes** (`ocp-worker-gpu-01`/`02` in `inventory.yaml` — a separate, optional path, not the default one above) does this need a registry at all. Tag and push to your registry's real Route hostname (from Prerequisites → OpenShift Cluster — `image-registry.openshift-image-registry.svc:5000` below is cluster-internal DNS and won't resolve from outside the cluster; replace it):
+If startup time is dominated by CUDA graph capture across batch sizes you'll never actually see, cap it rather than reaching for `--enforce-eager` — that flag skips the wait but costs real per-token latency on every request going forward, not just at startup:
 
 ```bash
-docker tag vllm-turboquant:cuda \
-  image-registry.openshift-image-registry.svc:5000/ai-serving/vllm-turboquant:cuda
-docker --config /tmp push \
-  image-registry.openshift-image-registry.svc:5000/ai-serving/vllm-turboquant:cuda
-# AMD equivalent: same pattern, tag :rocm instead of :cuda.
+--max-cudagraph-capture-size 32   # or whatever matches your actual expected concurrency
 ```
 
-**Deploy.** Entrypoint is the `vllm serve <model>` CLI. Real TurboQuant flags are `--kv-cache-dtype`, `--enable-turboquant`, `--turboquant-metadata-path`, and `--attention-backend TRITON_ATTN` (all four required together per the README's example) — meaningful only on A6000/GB10, omit on L4/L40S/AMD. The metadata file isn't shipped; generate it first:
+Health check, either vendor:
 
 ```bash
-python benchmarks/generate_turboquant_metadata.py \
-  --target-model <model> --calibration-model <model> \
-  --recipe turboquant35 --output turboquant_kv.json
+curl -s http://<host>:8000/health
 ```
 
-Only the image tag, GPU resource key, and node selector differ by vendor:
+**Deploying to OpenShift instead of a standalone host:** since both images are public on Docker Hub, referencing them directly in the Deployment YAML works in most clusters — no local build, no tag/push to the internal registry. Only tag/push to the cluster's own registry (real Route hostname from Prerequisites → OpenShift Cluster) if its network policy blocks pulling from Docker Hub outbound:
 
 ```yaml
-# file: openshift/vllm-turboquant-deployment.yaml
-# NVIDIA shown; for AMD swap image -> :rocm, nvidia.com/gpu -> amd.com/gpu,
-# add nodeSelector amd.com/gpu.family.gfx942: "true" (or your device-plugin's
-# label), and drop VLLM_ATTENTION_BACKEND (CUDA-backend-specific env var).
+# file: openshift/vllm-deployment.yaml
+# NVIDIA shown; for AMD swap image -> the rocm/vllm tag, nvidia.com/gpu ->
+# amd.com/gpu, and add nodeSelector amd.com/gpu.family.<your-arch>: "true"
+# (or your device-plugin's label).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: vllm-turboquant
+  name: vllm
   namespace: ai-serving
   labels:
-    app: vllm-turboquant
+    app: vllm
 spec:
   replicas: 2   # adjust to GPU count
   selector:
     matchLabels:
-      app: vllm-turboquant
+      app: vllm
   template:
     metadata:
       labels:
-        app: vllm-turboquant
+        app: vllm
     spec:
       containers:
         - name: vllm
-          image: image-registry.openshift-image-registry.svc:5000/ai-serving/vllm-turboquant:cuda
-          command: ["vllm", "serve"]
+          image: docker.io/vllm/vllm-openai:latest
           args:
             - "<your-model-repo-or-path>"
             - "--tensor-parallel-size"
@@ -542,11 +538,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: vllm-turboquant
+  name: vllm
   namespace: ai-serving
 spec:
   selector:
-    app: vllm-turboquant
+    app: vllm
   ports:
     - port: 8000
       targetPort: 8000
@@ -555,29 +551,25 @@ spec:
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
-  name: vllm-turboquant
+  name: vllm
   namespace: ai-serving
 spec:
-  to: { kind: Service, name: vllm-turboquant }
+  to: { kind: Service, name: vllm }
   port: { targetPort: http }
 ```
 
 ```bash
-oc apply -f openshift/vllm-turboquant-deployment.yaml
-oc rollout status deployment/vllm-turboquant -n ai-serving
-curl -s http://vllm-turboquant-ai-serving.apps.ocp.ai-platform.internal/health
+oc apply -f openshift/vllm-deployment.yaml
+oc rollout status deployment/vllm -n ai-serving
+curl -s http://vllm-ai-serving.apps.ocp.ai-platform.internal/health
 # Expected: {"status":"ok"}
 ```
 
-If you ran it standalone instead (the common case, above), the health check is simpler — no `oc`, no Route:
-
-```bash
-curl -s http://<host>:8000/health
-```
+**Intel Gaudi2:** no pre-built image exists for this, confirmed against vLLM's own installation docs. Build from `HabanaAI/vllm-fork` (`habana_main` branch — actively maintained, tensor-parallel validated up to 8 HPUs) or upstream vLLM's `requirements/hpu.txt`. This is a real, separate build project, not a quick pull — and don't expect `deploy-platform.py`'s Phase 1.1 automation to cover it: nothing in this platform's repos has a Habana code path, confirmed, so a Gaudi2 host is idle from this platform's point of view until you set this up independently.
 
 ### 1.2 — ds4-zgx-gb10 ("DwarfStar") → Mac Workstations
 
-⚠️ **Check your Mac's RAM before going further — the smallest model this project ships needs far more than a typical laptop has.** Confirmed via `download_model.sh --help`: the smallest downloadable variant, DeepSeek V4 Flash `q2-imatrix`, is **81GB on disk**, "recommended for 96 and 128GB RAM machines." Every other variant (Flash q4, PRO, GLM-5.2) is larger still — 153GB up to 434GB. On a Mac with 16–32GB of unified memory, `./download_model.sh` will pull a file that can't be loaded at all, or `ds4-server` will fail to start / get OOM-killed even if it downloads successfully. There is no smaller supported quant to fall back to. If your Mac fleet tops out well under ~96GB, skip this component entirely — see [Ollama](#phase-1--model-serving) (already part of Phase 1's Jetson/dev-sandbox tier) for a serving path that actually fits smaller hardware, or `vllm-turboquant` (Phase 1.1) if you have a qualifying GPU host instead.
+⚠️ **Check your Mac's RAM before going further — the smallest model this project ships needs far more than a typical laptop has.** Confirmed via `download_model.sh --help`: the smallest downloadable variant, DeepSeek V4 Flash `q2-imatrix`, is **81GB on disk**, "recommended for 96 and 128GB RAM machines." Every other variant (Flash q4, PRO, GLM-5.2) is larger still — 153GB up to 434GB. On a Mac with 16–32GB of unified memory, `./download_model.sh` will pull a file that can't be loaded at all, or `ds4-server` will fail to start / get OOM-killed even if it downloads successfully. There is no smaller supported quant to fall back to. If your Mac fleet tops out well under ~96GB, skip this component entirely — see [Ollama](#phase-1--model-serving) (already part of Phase 1's Jetson/dev-sandbox tier) for a serving path that actually fits smaller hardware, or native vLLM (Phase 1.1) if you have a GPU host instead.
 
 A narrow, DeepSeek-V4/GLM-5.2-specific native inference engine (project name **DwarfStar**), not a generic runner. `make` on macOS builds five binaries: `ds4`, `ds4-server`, `ds4-bench`, `ds4-eval`, `ds4-agent`.
 
@@ -793,7 +785,7 @@ static_resources:
                       \"@type\": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
 
   clusters:
-    # Aggregate cluster: tries vllm-turboquant first, then ds4-server, then
+    # Aggregate cluster: tries vllm first, then ds4-server, then
     # Ollama — the fallback chain, driven by active health checks.
     - name: production_with_failover
       connect_timeout: 5s
@@ -807,9 +799,9 @@ static_resources:
     - name: vllm_openshift
       connect_timeout: 5s
       type: STRICT_DNS   # Envoy runs OUTSIDE the OpenShift cluster (on
-                          # linux-cpu-01), so it must resolve vllm-turboquant's
+                          # linux-cpu-01), so it must resolve vllm's
                           # externally-exposed Route hostname -- NOT the
-                          # cluster-internal "vllm-turboquant.ai-serving.svc"
+                          # cluster-internal "vllm.ai-serving.svc"
                           # DNS name, which only resolves from inside the
                           # cluster's pod network.
       lb_policy: ROUND_ROBIN
@@ -827,7 +819,7 @@ static_resources:
                   # Routes are always served externally on port 80/443 by the
                   # router, regardless of the backend Service's internal port.
                   address:
-                    socket_address: { address: vllm-turboquant-ai-serving.apps.ocp.ai-platform.internal, port_value: 80 }
+                    socket_address: { address: vllm-ai-serving.apps.ocp.ai-platform.internal, port_value: 80 }
 
     - name: ds4_mac
       connect_timeout: 5s
@@ -957,7 +949,7 @@ Four things worth knowing before running this in production: it **rejects stream
 ssh admin@10.0.4.10 "cat > /opt/ai-platform/rlmgw/rlmgw.env << 'EOF'
 RLMGW_HOST=0.0.0.0
 RLMGW_PORT=8010
-RLMGW_UPSTREAM_BASE_URL=http://vllm-turboquant-ai-serving.apps.ocp.ai-platform.internal/v1
+RLMGW_UPSTREAM_BASE_URL=http://vllm-ai-serving.apps.ocp.ai-platform.internal/v1
 RLMGW_UPSTREAM_MODEL=<your-model-name>
 RLMGW_REPO_ROOT=/opt/ai-platform/active-repo
 RLMGW_MAX_CONTEXT_PACK_CHARS=12000
@@ -1044,7 +1036,7 @@ spec:
             - containerPort: 9000
           env:
             - name: VLLM_URL
-              value: "http://vllm-turboquant.ai-serving.svc:8000"
+              value: "http://vllm.ai-serving.svc:8000"
             - name: MODEL_NAME
               value: "<your-model-name>"
             - name: STATE_DB_PATH
@@ -1385,7 +1377,7 @@ Distills a large model (external teacher via vLLM) into a small model (student f
 # stable cu12x index.
 
 # Start the external-teacher vLLM server (any OpenAI-compatible /v1 works —
-# this platform's own vllm-turboquant deployment is fine; SDFT's design
+# this platform's own vllm deployment is fine; SDFT's design
 # offloads the teacher so the training GPU only needs to hold the student):
 #   vllm serve <teacher-model> --port 8000 --served-model-name <name>
 
@@ -1395,7 +1387,7 @@ ssh admin@10.0.3.10 "
   python3 main.py \
     --output_dir /opt/ai-platform/models/qwen3-0.6b-distilled \
     --model_name_or_path Qwen/Qwen3-0.6B \
-    --vllm_server_base_url http://vllm-turboquant-ai-serving.apps.ocp.ai-platform.internal/v1
+    --vllm_server_base_url http://vllm-ai-serving.apps.ocp.ai-platform.internal/v1
 "
 ```
 
@@ -1754,7 +1746,7 @@ Every port below is a **default**, not a requirement. To actually change one, ed
 |---------|------|----------|-------|-----------|----------------|
 | Ollama | 11434 | HTTP | Mac, Jetsons | ← Envoy | `OLLAMA_HOST=0.0.0.0:<port>` (systemd override, [1.3](#phase-1--model-serving)) |
 | ds4-server | 8080 | HTTP | Mac | ← Envoy | `--port` flag ([1.2](#phase-1--model-serving)) |
-| vllm-turboquant | 8000 | HTTP | OpenShift | ← Envoy, rlmgw, sonic | `--port` flag on `vllm serve` ([1.1](#phase-1--model-serving)) |
+| vllm (native) | 8000 | HTTP | OpenShift | ← Envoy, rlmgw, sonic | `--port` flag on `vllm serve` ([1.1](#phase-1--model-serving)) |
 | **Envoy** | **4000** | **HTTP** | **linux-cpu-01** | **← All clients. Admin :9901 is localhost-only.** | `port_value` in `envoy.yaml`'s listener block **and** the matching `-p` in the systemd unit's `docker run` — both must change together, or the container port mapping breaks ([2.1](#phase-2--gateway)) |
 | rlmgw | 8010 | HTTP | linux-cpu-01 | ← coding tools (megacode, SkillOpt, agents) only | `RLMGW_PORT` in `rlmgw.env` ([2.2](#phase-2--gateway)) |
 | sonic | 9000 | WS/HTTP | OpenShift | ← Agents, devs | uvicorn's `--port` in the Dockerfile `CMD` ([2.3](#phase-2--gateway)) — also check `config.py`/`.env.example` for a native setting that may need to match |
@@ -1810,7 +1802,7 @@ The real config surface for every component in this platform — not `inventory.
 
 | Component | Phase | Real config surface | Location |
 |---|---|---|---|
-| vllm-turboquant | 1.1 | CLI flags to `vllm serve` | No file — flags only |
+| vllm (native) | 1.1 | CLI flags to `vllm serve` | No file — flags only |
 | ds4-zgx-gb10 | 1.2 | CLI flags to `ds4-server` | Persisted only inside the launchd plist's argument list |
 | Ollama | 1.3 | systemd drop-in | `/etc/systemd/system/ollama.service.d/override.conf` |
 | Envoy | 2.1 | Static bootstrap config | `/opt/ai-platform/envoy/envoy.yaml` |
@@ -1845,7 +1837,7 @@ The real config surface for every component in this platform — not `inventory.
 ```bash
 # Envoy's Lua filter reads "model" from the body and routes accordingly.
 # "production" goes through the aggregate cluster's automatic
-# vllm-turboquant -> ds4-server -> Ollama failover chain.
+# vllm -> ds4-server -> Ollama failover chain.
 curl -s http://10.0.4.10:4000/v1/chat/completions \
   -H "Authorization: Bearer sk-REPLACE-ME" -H "Content-Type: application/json" \
   -d '{
@@ -1919,7 +1911,7 @@ ssh admin@10.0.3.10 "
   nohup python3 main.py \
     --output_dir /opt/ai-platform/models/qwen3-0.6b-distilled \
     --model_name_or_path Qwen/Qwen3-0.6B \
-    --vllm_server_base_url http://vllm-turboquant-ai-serving.apps.ocp.ai-platform.internal/v1 \
+    --vllm_server_base_url http://vllm-ai-serving.apps.ocp.ai-platform.internal/v1 \
     > /opt/ai-platform/logs/sdft-$(date +%Y%m%d).log 2>&1 &
   echo \"SDFT job started. PID: \$!\"
 "
@@ -1956,8 +1948,8 @@ CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://10.0.4.10:4000/v1/c
 echo "=== rlmgw (coding-context proxy) ==="
 curl -sf http://10.0.4.10:8010/healthz && echo " ✓" || echo " ✗ DOWN"
 
-echo "=== vllm-turboquant (OpenShift) ==="
-curl -sf http://vllm-turboquant-ai-serving.apps.ocp.ai-platform.internal/health && echo " ✓" || echo " ✗ DOWN"
+echo "=== vllm (OpenShift) ==="
+curl -sf http://vllm-ai-serving.apps.ocp.ai-platform.internal/health && echo " ✓" || echo " ✗ DOWN"
 
 echo "=== sonic (OpenShift) ==="
 curl -sf http://sonic-ai-gateways.apps.ocp.ai-platform.internal/healthz && echo " ✓" || echo " ✗ DOWN"
@@ -2003,7 +1995,7 @@ launchctl list | grep ai-platform
 **OpenShift:**
 
 ```bash
-oc logs -f -l app=vllm-turboquant -n ai-serving --tail=100
+oc logs -f -l app=vllm -n ai-serving --tail=100
 oc logs -f -l app=sonic -n ai-gateways --tail=100
 oc logs -f -l app=background-coding-agents -n ai-agents --tail=100
 oc logs -f -l app=fabrica -n ai-agents --tail=100
@@ -2025,7 +2017,7 @@ ssh admin@10.0.3.10 "watch -n 2 nvidia-smi"       # Linux GPU — NVIDIA
 ssh admin@<amd-host-ip> "watch -n 2 rocm-smi"     # Linux GPU — AMD
 ssh nvidia@10.0.2.10 "jtop"                       # Jetsons (always NVIDIA/Tegra)
 
-oc exec -it $(oc get pods -l app=vllm-turboquant -n ai-serving -o jsonpath='{.items[0].metadata.name}') \
+oc exec -it $(oc get pods -l app=vllm -n ai-serving -o jsonpath='{.items[0].metadata.name}') \
   -n ai-serving -- nvidia-smi
 ```
 
@@ -2034,13 +2026,12 @@ oc exec -it $(oc get pods -l app=vllm-turboquant -n ai-serving -o jsonpath='{.it
 | Problem | Check | Fix |
 |---------|-------|-----|
 | rlmgw can't reach Ollama on Jetson | `curl http://10.0.2.10:11434/api/tags` | Set `OLLAMA_HOST=0.0.0.0` on Jetson, restart Ollama |
-| vLLM OOM on OpenShift | `oc logs -l app=vllm-turboquant` | Reduce `--max-model-len` or increase GPU memory limit |
+| vLLM OOM on OpenShift | `oc logs -l app=vllm` | Reduce `--max-model-len` or increase GPU memory limit |
 | ain mesh shows no peers | `curl localhost:8787/v1/node/info` | Check firewall allows 4001 TCP/UDP and 8787 TCP; verify `--bootstrap` multiaddrs include the real `/p2p/<peer-id>` suffix |
 | ds4-server won't start on Mac | `cat /tmp/ds4-server.err` | Likely needs model download first: `./download_model.sh` |
 | SDFT training crashes | `tail -f /opt/ai-platform/logs/sdft-*.log` | Check CUDA memory; adjust the batch-size flag directly (`python3 main.py --help`). Adapted for CUDA 12.x on L4/L40S, not the GB10 hardware its own README documents |
 | aegis blocks a package install | `aegis policy` | `aegis review` the plan, then `aegisctl sign`/`aegisctl apply` — no `aegis approve` shortcut |
-| vllm-turboquant container won't see AMD GPUs | `docker exec <container> rocm-smi` | Confirm `--device=/dev/kfd --device=/dev/dri --group-add video` were passed; check `PYTORCH_ROCM_ARCH` matches `rocminfo \| grep gfx` |
-| TurboQuant flags rejected or silently ignored | `oc logs -l app=vllm-turboquant \| grep -i turboquant` | Expected on L4/L40S and all AMD GPUs — only activates on RTX A6000/SM86 or GB10/SM121 |
+| vllm container won't see AMD GPUs | `docker exec <container> rocm-smi` | Confirm `--device=/dev/kfd --device=/dev/dri --group-add video` were passed |
 | sparser-faster-llms won't build/run TwELL kernels | `python scripts/check_gb10_cuda.py --build-twell` | Likely the Hopper-vs-Ada mismatch (Phase 5.2), not a config issue |
 | Gaudi2 host sits idle | — | Expected — no repo here has a Habana/SynapseAI path |
 
@@ -2048,82 +2039,83 @@ oc exec -it $(oc get pods -l app=vllm-turboquant -n ai-serving -o jsonpath='{.it
 
 ## Component Reference
 
-Every component in this workspace, one entry each: what it is, what it actually needs, and the minimal command to run it completely on its own — no other repo, no `inventory.yaml` entry, nothing else from this platform. Full deployment (systemd units, OpenShift manifests, health checks) is in the phase section linked from each entry; this is the fast path if you're starting from one component instead of the whole platform.
+Every component in this workspace, one entry each: what it is, **when it's actually the right choice — not just what it does but what you'd reach for instead, and why** — what it needs, and the minimal command to run it completely on its own — no other repo, no `inventory.yaml` entry, nothing else from this platform. Full deployment (systemd units, OpenShift manifests, health checks) is in the phase section linked from each entry; this is the fast path if you're starting from one component instead of the whole platform.
 
-**The pattern that makes this possible:** across every phase audit behind this guide, not one of the 24 mitkox repos was found to have a hard, code-level dependency on another repo in this workspace. Every apparent cross-repo integration an earlier draft of this guide assumed — fabrica reading firecracker-agentfs's rootfs, background-coding-agents calling fabrica's sandbox API — turned out to be fabricated. What each repo actually needs is either generic infrastructure (a GPU, Kubernetes+Kata, Claude Code) or a single swappable `--base-url`/`api_base`/`*_ENDPOINT` config field pointed at any OpenAI-compatible server — this platform's Envoy, a bare `vllm serve` process, Ollama, OpenAI itself, or nothing.
+**The pattern that makes this possible:** across every phase audit behind this guide, not one of the 23 mitkox repos was found to have a hard, code-level dependency on another repo in this workspace. Every apparent cross-repo integration an earlier draft of this guide assumed — fabrica reading firecracker-agentfs's rootfs, background-coding-agents calling fabrica's sandbox API — turned out to be fabricated. What each repo actually needs is either generic infrastructure (a GPU, Kubernetes+Kata, Claude Code) or a single swappable `--base-url`/`api_base`/`*_ENDPOINT` config field pointed at any OpenAI-compatible server — this platform's Envoy, a bare `vllm serve` process, Ollama, OpenAI itself, or nothing. That independence is exactly what makes a real "use X instead of Y" choice possible below — nothing here locks you into a combination.
 
 ### Model Serving
 
-**vllm-turboquant** — vLLM fork with quantized-KV-cache serving. *Needs:* a GPU (CUDA or ROCm) + Docker. *Standalone:*
+**vllm (native)** — official, pre-built vLLM images for NVIDIA and AMD. **Use it when** you need an OpenAI-compatible serving endpoint on a GPU host — this is the default, recommended path for essentially any GPU (see [Which quantization format actually works on your GPU](#which-quantization-format-actually-works-on-your-gpu) for picking the right model tag for the card). *Needs:* a GPU (CUDA or ROCm) + Docker. *Standalone:*
 ```bash
-docker run -d --name vllm-turboquant --device=/dev/kfd --device=/dev/dri \
+docker run -d --name vllm --device=/dev/kfd --device=/dev/dri \
   --group-add video --ipc=host --shm-size 16g -p 8000:8000 \
-  vllm-turboquant:rocm <model> --tensor-parallel-size 2 --host 0.0.0.0 --port 8000
+  rocm/vllm:rocm7.14.0_rdna_ubuntu24.04_py3.14_pytorch_2.11.0_vllm_0.23.0 \
+  <model> --tensor-parallel-size 1 --host 0.0.0.0 --port 8000
 ```
 No rlmgw, no Envoy, no `inventory.yaml` entry required — `curl http://<host>:8000/v1/chat/completions` works immediately. Full deploy: [Phase 1.1](#phase-1--model-serving).
 
-**ds4-zgx-gb10** — native Metal inference for DeepSeek-V4/GLM-5.2. *Needs:* Apple Silicon Mac with **~96GB+ RAM** — confirmed the smallest downloadable model is 81GB on disk; there is no smaller supported quant, so a typical 16–32GB laptop cannot run this at all, regardless of how it's deployed. *Standalone (only if your RAM clears that bar):* `make && ./download_model.sh q4-imatrix && ./ds4-server -m gguf/<file>.gguf --ctx 100000 --kv-disk-dir /tmp/ds4-kv --kv-disk-space-mb 8192 --host 0.0.0.0`. Full deploy: [Phase 1.2](#phase-1--model-serving).
+**ds4-zgx-gb10** — native Metal inference for DeepSeek-V4/GLM-5.2. **Use it when** you specifically want those models running natively on Apple Silicon — there's no other component here that does Metal inference at all, so this isn't competing with anything, it's gated purely by hardware. *Needs:* Apple Silicon Mac with **~96GB+ RAM** — confirmed the smallest downloadable model is 81GB on disk; there is no smaller supported quant, so a typical 16–32GB laptop cannot run this at all, regardless of how it's deployed. Below that RAM bar, use Ollama on the same Mac instead — smaller models, same hardware, no 96GB gate. *Standalone (only if your RAM clears that bar):* `make && ./download_model.sh q4-imatrix && ./ds4-server -m gguf/<file>.gguf --ctx 100000 --kv-disk-dir /tmp/ds4-kv --kv-disk-space-mb 8192 --host 0.0.0.0`. Full deploy: [Phase 1.2](#phase-1--model-serving).
 
 ### Gateway
 
-**rlmgw** — repo-context-injecting proxy in front of one backend. *Needs:* one OpenAI-compatible endpoint (any). *Standalone:* `pip install -e '.[gw]'` then set `RLMGW_UPSTREAM_BASE_URL`/`RLMGW_REPO_ROOT` and run `python -m rlmgw.server`. Full deploy: [Phase 2.2](#phase-2--gateway).
+**rlmgw** — repo-context-injecting proxy in front of one backend. **Use it when** the client is a coding assistant that benefits from automatic repo context on every request, and you're fine with its real constraints: one backend, one repo, fixed at process startup — not a router. If you need to route across multiple backends or serve non-coding traffic, that's Envoy's job, not this one. *Needs:* one OpenAI-compatible endpoint (any). *Standalone:* `pip install -e '.[gw]'` then set `RLMGW_UPSTREAM_BASE_URL`/`RLMGW_REPO_ROOT` and run `python -m rlmgw.server`. Full deploy: [Phase 2.2](#phase-2--gateway).
 
-**sonic** — WebSocket agent gateway. *Needs:* one vLLM-compatible endpoint (`VLLM_URL`). *Standalone:* build the Dockerfile shown in [Phase 2.3](#phase-2--gateway) and `docker run -p 9000:9000 -e VLLM_URL=<any vllm> sonic:latest`.
+**sonic** — WebSocket agent gateway. **Use it when** a client specifically needs a persistent WebSocket connection to a vLLM backend rather than plain request/response HTTP — that's its whole reason to exist alongside Envoy/rlmgw, which are both HTTP-only. If your clients are fine with HTTP, you don't need this in the path at all. *Needs:* one vLLM-compatible endpoint (`VLLM_URL`). *Standalone:* build the Dockerfile shown in [Phase 2.3](#phase-2--gateway) and `docker run -p 9000:9000 -e VLLM_URL=<any vllm> sonic:latest`.
 
-**Envoy** *(added, not a repo)* — unifying gateway. *Needs:* whatever backends you point it at — works with just one. Config and validated live test: [Phase 2.1](#phase-2--gateway).
+**Envoy** *(added, not a repo)* — unifying gateway. **Use it when** you have more than one serving backend (different hardware tiers, vendors, or hosts) and want one endpoint with model-name routing and automatic failover. With exactly one backend it's optional convenience, not a requirement — anything can talk to that one backend directly instead. *Needs:* whatever backends you point it at — works with just one. Config and validated live test: [Phase 2.1](#phase-2--gateway).
 
 ### Agent Execution
 
-**fabrica** — Kata-Container microVM sandboxes. *Needs:* Kubernetes + Kata Containers + Cloud Hypervisor. *Standalone:* `helm upgrade --install fabrica deploy/helm/fabrica -f values-dev.yaml` against any Kata-enabled cluster — doesn't need OpenShift specifically. Full deploy: [Phase 3.1](#phase-3--agent-execution).
+**fabrica** — Kata-Container microVM sandboxes. **Use it when** you need genuine, kernel-level isolation for running untrusted or fully autonomous agent code, and you already have (or are willing to run) Kubernetes with the Kata operator. That's a real infrastructure commitment — if you just want a lighter sandbox without Kubernetes, look at firecracker-agentfs instead. *Needs:* Kubernetes + Kata Containers + Cloud Hypervisor. *Standalone:* `helm upgrade --install fabrica deploy/helm/fabrica -f values-dev.yaml` against any Kata-enabled cluster — doesn't need OpenShift specifically. Full deploy: [Phase 3.1](#phase-3--agent-execution).
 
-**firecracker-agentfs** — Firecracker microVM boot artifacts. *Needs:* KVM + Firecracker + NFS. *Standalone:* `./build-kernel.sh && ./build-rootfs.sh` on any KVM-capable Linux host — independent of fabrica. Full deploy: [Phase 3.2](#phase-3--agent-execution).
+**firecracker-agentfs** — Firecracker microVM boot artifacts. **Use it when** you want microVM-level sandboxing without a Kubernetes/Kata dependency — just a KVM-capable Linux box. It's not a drop-in fabrica replacement, though: this repo only builds the kernel/rootfs artifacts, not the launcher (`agentfs` binary + `firecracker.sh` aren't installed by this repo alone — see [Phase 3.2](#phase-3--agent-execution)). *Needs:* KVM + Firecracker + NFS. *Standalone:* `./build-kernel.sh && ./build-rootfs.sh` on any KVM-capable Linux host — independent of fabrica. Full deploy: [Phase 3.2](#phase-3--agent-execution).
 
-**background-coding-agents** — PLC/SCADA migration fleet manager. *Needs:* one OpenAI-compatible endpoint (`LLM_BASE_URL`). *Standalone:* `pip install -e '.[dev]' && uvicorn background_coding_agents.api.app:app --port 8080` with `LLM_BASE_URL` pointed anywhere. Full deploy: [Phase 3.3](#phase-3--agent-execution).
+**background-coding-agents** — PLC/SCADA migration fleet manager. **Use it when** your work actually fits its job model — a `MigrationRequest` referencing a packaged migration YAML under `fleet_manager/migrations/`. It's purpose-built for that one automation pattern, not a general agent-orchestration framework; don't reach for it outside that shape of work. *Needs:* one OpenAI-compatible endpoint (`LLM_BASE_URL`). *Standalone:* `pip install -e '.[dev]' && uvicorn background_coding_agents.api.app:app --port 8080` with `LLM_BASE_URL` pointed anywhere. Full deploy: [Phase 3.3](#phase-3--agent-execution).
 
-**ai-coding-factory** — `opencode`-driven scaffolding framework. *Needs:* the `opencode` CLI + one endpoint. *Standalone:* set `.env` (`OPENCODE_BASE_URL`/`OPENCODE_API_KEY`/`OPENCODE_MODEL`) and run `opencode run "..."` — no build/deploy step exists. Full detail: [Phase 3.4](#phase-3--agent-execution).
+**ai-coding-factory** — `opencode`-driven scaffolding framework. **Use it when** you're starting a brand-new .NET project and want AI Scrum-team roles (product-owner, scrum-master, developer, qa, security, devops) to bootstrap it from the `clean-architecture-solution` template. It has nothing to offer an existing project — it scaffolds, it doesn't operate ongoing. *Needs:* the `opencode` CLI + one endpoint. *Standalone:* set `.env` (`OPENCODE_BASE_URL`/`OPENCODE_API_KEY`/`OPENCODE_MODEL`) and run `opencode run "..."` — no build/deploy step exists. Full detail: [Phase 3.4](#phase-3--agent-execution).
 
 ### Security
 
-**aegis** — signed package-install broker. *Needs:* nothing but the binaries; its AI-review step calls a configurable endpoint. *Standalone:* `cargo build --release && sudo cp target/release/{aegis,aegisctl,aegisd,aegis-reviewd} /usr/local/bin/` then `aegis npm install <pkg> --plan`. Full deploy incl. Linux daemon pipeline: [Phase 4.1](#phase-4--security-pipeline).
+**aegis** — signed package-install broker. **Use it when** you want an auditable, signed approval trail before a package install actually happens — `plan` → `review` → `policy` → `aegisctl sign` → `aegisctl apply`. It is not a transparent `npm`/`pip` replacement; the guide already warns against aliasing it directly, since every install stops at "plan written" until it's actually pushed through that chain. *Needs:* nothing but the binaries; its AI-review step calls a configurable endpoint. *Standalone:* `cargo build --release && sudo cp target/release/{aegis,aegisctl,aegisd,aegis-reviewd} /usr/local/bin/` then `aegis npm install <pkg> --plan`. Full deploy incl. Linux daemon pipeline: [Phase 4.1](#phase-4--security-pipeline).
 
-**megacode** — RLM-based .NET security auditor. *Needs:* one endpoint (`AUDIT_LM_API_BASE`). *Standalone:* `pip install -e '.[dev]' && security-audit --source-root . --output-report report.md`. Full deploy: [Phase 4.2](#phase-4--security-pipeline).
+**megacode** — RLM-based .NET security auditor. **Use it when** the codebase under audit is actually .NET — that's what its default model (`openai/mitko`) and its whole reasoning loop are built around; nothing here suggests it generalizes to other languages. *Needs:* one endpoint (`AUDIT_LM_API_BASE`). *Standalone:* `pip install -e '.[dev]' && security-audit --source-root . --output-report report.md`. Full deploy: [Phase 4.2](#phase-4--security-pipeline).
 
-**tnt** — Roadrunner/Coyote vulnerability triage. *Needs:* two independently configurable endpoints. *Standalone:* `uv sync` (python/) + `npm install` (node/), then `./scripts/verify-harness.sh --repo-root <path>`. Full deploy: [Phase 4.3](#phase-4--security-pipeline).
+**tnt** — Roadrunner/Coyote vulnerability triage. **Use it when** you're specifically triaging Roadrunner/Coyote-related findings — narrow by name and by design, not a general vulnerability scanner. *Needs:* two independently configurable endpoints. *Standalone:* `uv sync` (python/) + `npm install` (node/), then `./scripts/verify-harness.sh --repo-root <path>`. Full deploy: [Phase 4.3](#phase-4--security-pipeline).
 
 ### Model Optimization
 
-**SDFT** — self-distillation training loop. *Needs:* a CUDA GPU + one external vLLM teacher endpoint (any vLLM, not necessarily this platform's). *Standalone:* `python3 main.py --output_dir <dir> --model_name_or_path Qwen/Qwen3-0.6B --vllm_server_base_url <any vllm>`. Full deploy: [Phase 5.1](#phase-5--model-optimization).
+**SDFT** — self-distillation training loop. **Use it when** you have a CUDA GPU (confirmed no ROCm/HIP path exists) and want to distill a smaller model against a larger teacher's outputs — the teacher can be any vLLM endpoint, not necessarily one running on this platform. *Needs:* a CUDA GPU + one external vLLM teacher endpoint. *Standalone:* `python3 main.py --output_dir <dir> --model_name_or_path Qwen/Qwen3-0.6B --vllm_server_base_url <any vllm>`. Full deploy: [Phase 5.1](#phase-5--model-optimization).
 
-**sparser-faster-llms** — sparse-transformer training with custom CUDA kernels. *Needs:* a CUDA GPU (H100-class kernels) — no network dependency at all. *Standalone:* `bash scripts/install.sh --full && ./launch.sh <n-gpus> sparsity_gated_1p5b zero1`. Full deploy: [Phase 5.2](#phase-5--model-optimization).
+**sparser-faster-llms** — sparse-transformer training with custom CUDA kernels. **Use it when** the GPU is genuinely Hopper-class or newer — its custom TwELL kernels have a real, confirmed Hopper-vs-Ada mismatch risk on anything else. Don't expect it to just work on whatever CUDA GPU happens to be free. *Needs:* a CUDA GPU (H100-class kernels) — no network dependency at all. *Standalone:* `bash scripts/install.sh --full && ./launch.sh <n-gpus> sparsity_gated_1p5b zero1`. Full deploy: [Phase 5.2](#phase-5--model-optimization).
 
-**Thinking-with-Visual-Primitives** — no code ships yet; nothing to run.
+**Thinking-with-Visual-Primitives** — no code ships yet; nothing to run, so nothing to choose between yet either.
 
 ### Edge Agents
 
-**oda** — one-command Linux AI dev environment setup. *Needs:* a Linux host, interactive session (see [Phase 6.1](#phase-6--edge-agents) for why). *Standalone:* `./oda.sh`, run interactively.
+**oda** — one-command Linux AI dev environment setup. **Use it when** you're provisioning a Linux dev box for the first time and are fine sitting through 9 blocking interactive prompts — it's a one-time setup tool, not something to re-run or script into an automated pipeline (confirmed: no working non-interactive flags). *Needs:* a Linux host, interactive session (see [Phase 6.1](#phase-6--edge-agents) for why). *Standalone:* `./oda.sh`, run interactively.
 
-**oda-r** — DSPy-branded (but not DSPy-based) reasoning compiler. *Needs:* one completion-style endpoint (`server_url`). *Standalone:* `pip install -r requirements.txt && python odar.py <file> --config config.yaml`. Full deploy: [Phase 6.2](#phase-6--edge-agents).
+**oda-r** — DSPy-branded (but not DSPy-based) reasoning compiler. **Use it when** you want a small, hand-rolled iterative retry loop against one completion endpoint — don't reach for it expecting DSPy's actual Signatures/Modules framework, since despite the name and the `dspy-ai` line in its requirements file, `odar.py` never imports `dspy`. *Needs:* one completion-style endpoint (`server_url`). *Standalone:* `pip install -r requirements.txt && python odar.py <file> --config config.yaml`. Full deploy: [Phase 6.2](#phase-6--edge-agents).
 
-**ain** — P2P signed-event mesh. *Needs:* nothing — no LLM dependency of any kind. *Standalone:* `cargo build --release && ./target/release/ain-node --http-listen 0.0.0.0:8787 --p2p-listen /ip4/0.0.0.0/tcp/4001 --data-dir ./data` — runs as a single isolated node with no `--bootstrap` peers if you just want to try it. Full deploy incl. the local-signing model: [Phase 6.3](#phase-6--edge-agents).
+**ain** — P2P signed-event mesh. **Use it when** agents across the fleet need to publish and consume signed events from each other, independent of whichever model-serving backend each one happens to use — it has no LLM dependency at all, so it's the coordination/messaging layer, not a serving or reasoning component. *Needs:* nothing — no LLM dependency of any kind. *Standalone:* `cargo build --release && ./target/release/ain-node --http-listen 0.0.0.0:8787 --p2p-listen /ip4/0.0.0.0/tcp/4001 --data-dir ./data` — runs as a single isolated node with no `--bootstrap` peers if you just want to try it. Full deploy incl. the local-signing model: [Phase 6.3](#phase-6--edge-agents).
 
 ### Developer Tools
 
-**SkillOpt** — skill-document/prompt optimizer. *Needs:* one local OpenAI-compatible server. *Standalone:* `pip install -e . && python3 scripts/train.py --config <cfg>`. Full deploy: [Phase 7.1](#phase-7--developer-tools).
+**SkillOpt** — skill-document/prompt optimizer. **Use it when** you're iterating on skill/prompt content against a server you control locally — it's built around a local OpenAI-compatible endpoint, not a cloud API. *Needs:* one local OpenAI-compatible server. *Standalone:* `pip install -e . && python3 scripts/train.py --config <cfg>`. Full deploy: [Phase 7.1](#phase-7--developer-tools).
 
-**dede** — .NET dependency/blast-radius explorer. *Needs:* .NET SDK only — no network dependency. *Standalone:* `dotnet run --project src/DogEatDog.DependencyExplorer.Cli -- scan <path> -o graph.json` then `... -- serve graph.json`. Full deploy: [Phase 7.2](#phase-7--developer-tools).
+**dede** — .NET dependency/blast-radius explorer. **Use it when** you need to understand what a change to a .NET codebase would actually touch, before making it — pure static analysis, no LLM or network dependency, so there's no backend decision to make at all. *Needs:* .NET SDK only. *Standalone:* `dotnet run --project src/DogEatDog.DependencyExplorer.Cli -- scan <path> -o graph.json` then `... -- serve graph.json`. Full deploy: [Phase 7.2](#phase-7--developer-tools).
 
-**ccar** — Claude-Code-native autonomous benchmark loop. *Needs:* Claude Code itself. *Standalone:* `./install-global.sh`, then `/autoresearch <goal>` inside a Claude Code session. Full deploy: [Phase 7.3](#phase-7--developer-tools).
+**ccar** — Claude-Code-native autonomous benchmark loop. **Use it when** you're already working inside Claude Code and want an autonomous `/autoresearch <goal>` loop there — it has a hard, non-optional dependency on Claude Code itself, it isn't usable standalone outside that context. *Needs:* Claude Code itself. *Standalone:* `./install-global.sh`, then `/autoresearch <goal>` inside a Claude Code session. Full deploy: [Phase 7.3](#phase-7--developer-tools).
 
-**llama3.2-coreml** — Llama 3.2 → Core ML export/quantization. *Needs:* Mac + Python — no network dependency. *Standalone:* `python3 run_model.py --output-dir ./export` (export only; no inference path ships in this repo). Full deploy: [Phase 7.4](#phase-7--developer-tools).
+**llama3.2-coreml** — Llama 3.2 → Core ML export/quantization. **Use it when** you need a Core ML artifact to feed into a *different* Apple inference pipeline — this repo is export-only, confirmed no inference path ships here, so it's never the thing that actually serves the model. *Needs:* Mac + Python — no network dependency. *Standalone:* `python3 run_model.py --output-dir ./export`. Full deploy: [Phase 7.4](#phase-7--developer-tools).
 
-**omarchy-ai** — one-time Arch+Hyprland workstation installer. *Needs:* a fresh Arch Linux install. *Standalone:* `curl -fsSL .../boot.sh | bash`, run interactively, locally. Full deploy: [Phase 7.5](#phase-7--developer-tools).
+**omarchy-ai** — one-time Arch+Hyprland workstation installer. **Use it when** you're provisioning a *new* Arch Linux machine from bare metal and want Hyprland + AI tooling preinstalled — interactive, one-time, includes a mid-install reboot, so this is not something to run against a host already in use. *Needs:* a fresh Arch Linux install. *Standalone:* `curl -fsSL .../boot.sh | bash`, run interactively, locally. Full deploy: [Phase 7.5](#phase-7--developer-tools).
 
-**fteplusai** — vendor-replacement program agents/skills. *Needs:* an AI-agent runtime to load the markdown into (Claude Code, etc.) — nothing to install. Full detail: [Phase 7.6](#phase-7--developer-tools).
+**fteplusai** — vendor-replacement program agents/skills. **Use it when** you want ready-made agent personas and skill definitions to load into an AI coding assistant you already have running (Claude Code, etc.) — it's markdown content to load, not a service to deploy; there's no build/run step here at all. *Needs:* an AI-agent runtime to load the markdown into. Full detail: [Phase 7.6](#phase-7--developer-tools).
 
-**aimatch** — Extract→Search→Reason→Calibrate profile matcher. *Needs:* nothing by default (TF-IDF heuristic); optionally one endpoint via `--use-local-llm`. *Standalone:* `pip install -e . && aimatch run --queries q.jsonl --candidates c.jsonl --output out.jsonl`. Full deploy: [Phase 7.7](#phase-7--developer-tools).
+**aimatch** — Extract→Search→Reason→Calibrate profile matcher. **Use it when** you're matching structured profiles/candidates against queries — works with zero LLM dependency by default (a TF-IDF heuristic), so reach for `--use-local-llm` only if the heuristic genuinely isn't good enough for your data, not as a default. *Needs:* nothing by default; optionally one endpoint via `--use-local-llm`. *Standalone:* `pip install -e . && aimatch run --queries q.jsonl --candidates c.jsonl --output out.jsonl`. Full deploy: [Phase 7.7](#phase-7--developer-tools).
 
-**local-harness** — not a mitkox repo (`github.com/aidotse/local-harness`). Personal, loopback-only lane switcher between Claude/Gemini subscriptions and any OpenAI-compatible endpoint. *Needs:* Node.js 18+, nothing else (zero npm dependencies). *Standalone:* `node gateway.js`, then configure lanes from the Admin GUI, or run `python3 deploy-platform.py --phase 7.8` to point its `local` lane at this platform's own Envoy/rlmgw. Full deploy: [Phase 7.8](#phase-7--developer-tools).
+**local-harness** — not a mitkox repo (`github.com/aidotse/local-harness`). Personal, loopback-only lane switcher between Claude/Gemini subscriptions and any OpenAI-compatible endpoint. **Use it when** *you*, one developer, want to switch your own tools between a paid subscription and this platform's self-hosted fleet without reconfiguring each tool separately — it's explicitly not a shared/team service (loopback-only, one user), and its license requires AI Sweden's written agreement for any organizational use beyond that (see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) if this repo isn't already an AI Sweden context for you). *Needs:* Node.js 18+, nothing else. *Standalone:* `node gateway.js`, then configure lanes from the Admin GUI, or run `python3 deploy-platform.py --phase 7.8` to point its `local` lane at this platform's own Envoy/rlmgw. Full deploy: [Phase 7.8](#phase-7--developer-tools).
 
 ### Not part of this platform
 
-**aks-edge-utils** — a fork of Microsoft's official AKS Edge Essentials repo. Present in the workspace but not referenced anywhere in `inventory.yaml` or this guide — unrelated to everything above.
+**aks-edge-utils** — a fork of Microsoft's official AKS Edge Essentials repo. Present in the workspace but not referenced anywhere in `inventory.yaml` or this guide — unrelated to everything above, no "use it when" applies.

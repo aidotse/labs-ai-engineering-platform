@@ -6,7 +6,7 @@ orchestration scripts ([DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md),
 [inventory.yaml](inventory.yaml)) — all original work by this repo's author,
 covered by [LICENSE](LICENSE) (MIT).
 
-**None of the 26 components this guide deploys are vendored here.** Each one
+**None of the 25 components this guide deploys are vendored here.** Each one
 is a git submodule: a pointer (remote URL + commit SHA) to its own,
 independently-owned public repository, not a copy of its source. `LICENSE`
 only covers the guide and the two scripts — it has no bearing on any
@@ -49,7 +49,6 @@ git submodule update --init --recursive
 | sonic | [github.com/mitkox/sonic](https://github.com/mitkox/sonic) | MIT |
 | sparser-faster-llms | [github.com/mitkox/sparser-faster-llms](https://github.com/mitkox/sparser-faster-llms) | MIT |
 | tnt | [github.com/mitkox/tnt](https://github.com/mitkox/tnt) | MIT |
-| vllm-turboquant | [github.com/mitkox/vllm-turboquant](https://github.com/mitkox/vllm-turboquant) | Apache-2.0 (fork of [vllm-project/vllm](https://github.com/vllm-project/vllm), itself Apache-2.0) |
 
 All licenses above were read directly from each repository's own `LICENSE`
 file at the commit this repo currently pins to (`git submodule status`) —

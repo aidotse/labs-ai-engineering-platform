@@ -86,7 +86,7 @@ openshift_cluster:
   namespaces:
     serving:
       name: ai-serving
-      services: [vllm-turboquant]
+      services: [vllm]
 
     gateways:
       name: ai-gateways
@@ -154,7 +154,7 @@ linux_gpu_hosts:
     rocm_version: "6.2"
     role: training_amd
     services:
-      - vllm-turboquant
+      - vllm
       - aegis
 
 linux_cpu_hosts:

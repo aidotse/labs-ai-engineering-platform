@@ -4,14 +4,12 @@
 # small pointer file (`gitdir: ../.git/modules/<name>`) -- its actual target
 # lives in this superproject's .git/modules/, outside whatever directory a
 # tool run from inside that submodule treats as its root. That breaks
-# anything expecting a self-contained repo there: confirmed with
-# vllm-turboquant, whose build derives its version from git history via
-# setuptools_scm and fails with "setuptools-scm was unable to detect
-# version" as a direct result (see DEPLOYMENT_GUIDE.md Phase 1.1). Nothing
-# rules out another of the 26 components hitting the same class of problem
-# -- some other build step reading git history, an editor/IDE expecting a
-# real .git, etc. -- so this materializes a real .git directory in every
-# submodule, not just the one already confirmed to need it.
+# anything expecting a self-contained repo there -- a build step that
+# derives its version from git history (setuptools_scm and similar fail
+# with something like "was unable to detect version"), an editor/IDE
+# expecting a real .git, etc. This materializes a real .git directory in
+# every submodule instead, so nothing in any of them hits that class of
+# problem.
 #
 # Run once after cloning or after `git submodule update`. Safe to re-run --
 # a no-op for any submodule already materialized.
