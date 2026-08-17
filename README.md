@@ -37,6 +37,8 @@ git clone --recurse-submodules <this-repo-url>
 git submodule update --init --recursive
 ```
 
+Also run `./fix-submodules-git.sh` once afterward, for every submodule to have a real, self-contained `.git` — a plain submodule checkout leaves each one as a pointer file whose target sits outside that directory, which breaks anything expecting a normal repo there (confirmed with `vllm-turboquant`'s build, which derives its version from git history — see the note in [DEPLOYMENT_GUIDE.md's Phase 1.1](DEPLOYMENT_GUIDE.md#phase-1--model-serving)).
+
 ## License
 
 The guide and the two scripts above are MIT-licensed — see

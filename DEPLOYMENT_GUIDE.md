@@ -414,15 +414,13 @@ Every automated step refuses to run against a placeholder value (`TBD`, `0`, any
 
 TurboQuant's KV-cache quantization — this fork's actual differentiator over stock vLLM — only activates on NVIDIA **RTX A6000/SM86** or **GB10/SM121** (confirmed in `docs/features/quantization/turboquant_a6000.md`). The real OpenShift GPU nodes are L4/L40S (SM89) or possibly AMD — neither qualifies, so this is "deploy vLLM 0.19," not a throughput upgrade, unless an A6000 gets added. Both `docker/Dockerfile` (CUDA) and `docker/Dockerfile.rocm` (ROCm) are real — pick the one matching `gpu_vendor` in `inventory.yaml`. If a node turns out to be Gaudi2, skip vllm-turboquant there entirely.
 
-**If you cloned this platform repo with submodules:** `vllm-turboquant/.git` is a small pointer file (`gitdir: ../.git/modules/vllm-turboquant`), not a real git directory — normal for a submodule, but `docker build .` run from inside it only sends that directory as build context, so the pointer's actual target never reaches the image. vLLM's `setup.py` derives its version from git history via `setuptools_scm`; with no usable git metadata inside the container it fails with `setuptools-scm was unable to detect version`. Fix: build from a plain standalone clone instead —
+**If you cloned this platform repo with submodules:** `vllm-turboquant/.git` is a small pointer file (`gitdir: ../.git/modules/vllm-turboquant`), not a real git directory — normal for a submodule, but `docker build .` run from inside it only sends that directory as build context, so the pointer's actual target never reaches the image. vLLM's `setup.py` derives its version from git history via `setuptools_scm`; with no usable git metadata inside the container it fails with `setuptools-scm was unable to detect version`. Fix, once, right after cloning — no separate clone needed, this stays inside the one checkout:
 
 ```bash
-git clone https://github.com/mitkox/vllm-turboquant.git ~/vllm-turboquant-build
-cd ~/vllm-turboquant-build
-git checkout <commit-this-platform-pins-to>   # see: git -C vllm-turboquant rev-parse HEAD
+./fix-submodules-git.sh
 ```
 
-— then run the build commands below from there. `deploy-platform.py`'s own Phase 1.1 automation handles this itself (transfers a `git bundle` instead of a plain rsync, so the remote build always gets real git history regardless of how the local copy was checked out).
+This materializes a real, self-contained `.git` directory inside every submodule (each copied from the superproject's `.git/modules/<name>`, with the now-incorrect `core.worktree` back-reference stripped) — not just `vllm-turboquant`, since nothing rules out another of the 26 components hitting the same class of problem later. Safe to re-run — a no-op for whatever's already done. After this, `docker build .` from inside `vllm-turboquant/` works normally. `deploy-platform.py`'s own Phase 1.1 automation doesn't need this — it transfers a `git bundle` to the remote host instead of a plain rsync, so the remote build always gets real git history regardless of how the local copy was checked out.
 
 **Build.** No registry needed for this step, on either vendor — the image only needs to exist in the local Docker daemon on whichever host will actually run it (that's also all `deploy-platform.py`'s Phase 1.1 automation ever does: build and run in place over SSH, nothing pushed anywhere):
 
