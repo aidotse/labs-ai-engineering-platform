@@ -346,13 +346,27 @@ def phase1_vllm_turboquant(ctx: Ctx) -> None:
             print(f"Skipped {name}.")
             continue
 
-        remote_build = (
-            f"cd {ctx.inv['global']['remote_base_path']}/vllm-turboquant && "
-            f"docker build -t vllm-turboquant:{vendor} --build-arg {build_arg} -f {dockerfile} ."
-        )
-        run_remote(ctx, user, ip, f"rsync --version >/dev/null")  # cheap existence check, real rsync happens via deploy.sh pattern below
-        run_local(f"rsync -avz --delete{rsync_ssh_flag(ctx)} --exclude '.git' --exclude 'target' "
-                  f"'{ctx.inv['global']['local_repo_root']}/vllm-turboquant/' '{user}@{ip}:{ctx.inv['global']['remote_base_path']}/vllm-turboquant/'")
+        remote_dir = f"{ctx.inv['global']['remote_base_path']}/vllm-turboquant"
+        remote_build = f"cd {remote_dir} && docker build -t vllm-turboquant:{vendor} --build-arg {build_arg} -f {dockerfile} ."
+
+        # vLLM's setup.py derives its version from git history via
+        # setuptools_scm -- a plain rsync (which has to exclude .git; syncing
+        # a submodule's raw .git *pointer* file wouldn't help either, since
+        # it resolves to a path outside the docker build context) leaves the
+        # remote copy with no usable git metadata, and the build fails with
+        # "setuptools-scm was unable to detect version". A bundle transfers
+        # real, self-contained history instead, resolving correctly whether
+        # the local copy is a plain clone or a submodule checkout. This only
+        # bundles up to the local HEAD commit -- uncommitted local edits to
+        # vllm-turboquant are not deployed, matching this script's build
+        # elsewhere from a defined git state rather than scratch changes.
+        local_vllm_dir = f"{ctx.inv['global']['local_repo_root']}/vllm-turboquant"
+        bundle_path = REPO_ROOT / ".vllm-turboquant.bundle"
+        run_local(f"git -C {shlex.quote(local_vllm_dir)} bundle create {bundle_path} HEAD")
+        run_remote(ctx, user, ip, f"rm -rf {remote_dir}")
+        run_local(f"scp {scp_identity_prefix(ctx)}{bundle_path} {user}@{ip}:/tmp/vllm-turboquant.bundle")
+        run_remote(ctx, user, ip, f"git clone /tmp/vllm-turboquant.bundle {remote_dir} && rm -f /tmp/vllm-turboquant.bundle")
+        bundle_path.unlink(missing_ok=True)
         run_remote(ctx, user, ip, remote_build)
 
         run_remote(ctx, user, ip, f"docker rm -f vllm-turboquant 2>/dev/null || true", check=False)
