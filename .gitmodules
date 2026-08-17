@@ -1,0 +1,78 @@
+[submodule "dede"]
+	path = dede
+	url = https://github.com/mitkox/dede.git
+[submodule "SDFT"]
+	path = SDFT
+	url = https://github.com/mitkox/SDFT.git
+[submodule "SkillOpt"]
+	path = SkillOpt
+	url = https://github.com/mitkox/SkillOpt.git
+[submodule "Thinking-with-Visual-Primitives"]
+	path = Thinking-with-Visual-Primitives
+	url = https://github.com/mitkox/Thinking-with-Visual-Primitives.git
+[submodule "aegis"]
+	path = aegis
+	url = https://github.com/mitkox/aegis.git
+[submodule "ai-coding-factory"]
+	path = ai-coding-factory
+	url = https://github.com/mitkox/ai-coding-factory.git
+[submodule "aimatch"]
+	path = aimatch
+	url = https://github.com/mitkox/aimatch.git
+[submodule "ain"]
+	path = ain
+	url = https://github.com/mitkox/ain.git
+[submodule "aks-edge-utils"]
+	path = aks-edge-utils
+	url = https://github.com/mitkox/aks-edge-utils.git
+[submodule "background-coding-agents"]
+	path = background-coding-agents
+	url = https://github.com/mitkox/background-coding-agents.git
+[submodule "ccar"]
+	path = ccar
+	url = https://github.com/mitkox/ccar.git
+[submodule "ds4-zgx-gb10"]
+	path = ds4-zgx-gb10
+	url = https://github.com/mitkox/ds4-zgx-gb10.git
+[submodule "fabrica"]
+	path = fabrica
+	url = https://github.com/mitkox/fabrica.git
+[submodule "firecracker-agentfs"]
+	path = firecracker-agentfs
+	url = https://github.com/mitkox/firecracker-agentfs.git
+[submodule "fteplusai"]
+	path = fteplusai
+	url = https://github.com/mitkox/fteplusai.git
+[submodule "llama3.2-coreml"]
+	path = llama3.2-coreml
+	url = https://github.com/mitkox/llama3.2-coreml.git
+[submodule "local-harness"]
+	path = local-harness
+	url = https://github.com/aidotse/local-harness.git
+[submodule "megacode"]
+	path = megacode
+	url = https://github.com/mitkox/megacode.git
+[submodule "oda-r"]
+	path = oda-r
+	url = https://github.com/mitkox/oda-r.git
+[submodule "oda"]
+	path = oda
+	url = https://github.com/mitkox/oda.git
+[submodule "omarchy-ai"]
+	path = omarchy-ai
+	url = https://github.com/mitkox/omarchy-ai.git
+[submodule "rlmgw"]
+	path = rlmgw
+	url = https://github.com/mitkox/rlmgw.git
+[submodule "sonic"]
+	path = sonic
+	url = https://github.com/mitkox/sonic.git
+[submodule "sparser-faster-llms"]
+	path = sparser-faster-llms
+	url = https://github.com/mitkox/sparser-faster-llms.git
+[submodule "tnt"]
+	path = tnt
+	url = https://github.com/mitkox/tnt.git
+[submodule "vllm-turboquant"]
+	path = vllm-turboquant
+	url = https://github.com/mitkox/vllm-turboquant.git

@@ -1,0 +1,184 @@
+---
+global:
+  remote_base_path: /opt/ai-platform
+  local_repo_root: /Users/laurianlamba/Gitlab/LocalProjects/mitko/mitkox-repos
+  ssh_key: ~/.ssh/id_ed25519
+  gateway_url: http://10.0.4.10:4000
+  rlmgw_url: http://10.0.4.10:8010
+
+mac_workstations:
+  - hostname: mac-dev-01
+    ip: 10.0.1.10
+    ssh_user: dev
+    chip: M4_Max
+    ram_gb: 32
+    ollama_port: 11434
+    services:
+      - llama3.2-coreml
+      - aegis
+      - ain
+      - SkillOpt
+      - dede
+      - ccar
+      - local-harness
+      - megacode
+      - tnt
+
+  - hostname: mac-dev-02
+    ip: 10.0.1.11
+    ssh_user: dev
+    chip: M4_Pro
+    ram_gb: 32
+    ollama_port: 11434
+    services:
+      - llama3.2-coreml
+      - aegis
+      - ain
+      - SkillOpt
+      - dede
+      - ccar
+      - local-harness
+
+jetson_nodes:
+  ssh_user: nvidia
+  ollama_port: 11434
+  default_models:
+    - llama3.2:3b
+    - qwen3:0.6b
+    - nomic-embed-text
+
+  nodes:
+    - hostname: jetson-01
+      ip: 10.0.2.10
+      role: primary_edge
+      jetpack_version: "6.2"
+      services: [ollama, oda, oda-r, ain, aegis]
+
+    - hostname: jetson-02
+      ip: 10.0.2.11
+      role: edge_inference
+      jetpack_version: "6.2"
+      services: [ollama, oda, oda-r, ain, aegis]
+
+    - hostname: jetson-03
+      ip: 10.0.2.12
+      role: edge_inference
+      jetpack_version: "6.2"
+      services: [ollama, oda, oda-r, ain, aegis]
+
+    - hostname: jetson-04
+      ip: 10.0.2.13
+      role: edge_inference
+      jetpack_version: "6.2"
+      services: [ollama, oda-r, ain]
+
+    - hostname: jetson-05
+      ip: 10.0.2.14
+      role: edge_inference
+      jetpack_version: "6.2"
+      services: [ollama, oda-r, ain]
+
+openshift_cluster:
+  api_url: https://api.ocp.ai-platform.internal:6443
+  console_url: https://console.ocp.ai-platform.internal
+  registry: default-route-openshift-image-registry.apps.ocp.ai-platform.internal
+
+  namespaces:
+    serving:
+      name: ai-serving
+      services: [vllm-turboquant]
+
+    gateways:
+      name: ai-gateways
+      services: [sonic]
+
+    agents:
+      name: ai-agents
+      services: [background-coding-agents, ai-coding-factory, fabrica]
+
+  gpu_nodes:
+    - hostname: ocp-worker-gpu-01
+      ip: 10.0.5.10
+      gpu_vendor: nvidia
+      gpus: [nvidia_REPLACE_WITH_L4_OR_L40S]
+      gpu_count: 0
+    - hostname: ocp-worker-gpu-02
+      ip: 10.0.5.11
+      gpu_vendor: TBD
+      gpus: [TBD]
+      gpu_count: 0
+
+linux_gpu_hosts:
+  - hostname: linux-gpu-01
+    ip: 10.0.3.10
+    ssh_user: admin
+    gpu_vendor: nvidia
+    gpus: [nvidia_l40s]
+    gpu_count: 0
+    cuda_version: "12.x"
+    role: training_primary
+    services:
+      - SDFT
+      - sparser-faster-llms
+      - aegis
+
+  - hostname: linux-gpu-02
+    ip: 10.0.3.11
+    ssh_user: admin
+    gpu_vendor: nvidia
+    gpus: [nvidia_l4]
+    gpu_count: 0
+    cuda_version: "12.x"
+    role: training_secondary
+    services:
+      - SDFT
+      - sparser-faster-llms
+      - aegis
+
+  - hostname: linux-gpu-03
+    ip: 10.0.3.12
+    ssh_user: admin
+    gpu_vendor: intel
+    gpus: [intel_gaudi2]
+    gpu_count: 0
+    role: training_overflow
+    services:
+      - aegis
+
+  - hostname: linux-gpu-04
+    ip: 10.0.3.13
+    ssh_user: admin
+    gpu_vendor: amd
+    gpus: [amd_REPLACE_WITH_ACTUAL_MODEL]
+    gpu_count: 0
+    rocm_version: "6.2"
+    role: training_amd
+    services:
+      - vllm-turboquant
+      - aegis
+
+linux_cpu_hosts:
+  - hostname: linux-cpu-01
+    ip: 10.0.4.10
+    ssh_user: admin
+    ram_gb: 64
+    kvm_enabled: true
+    role: gateway_and_sandbox
+    services:
+      - envoy
+      - rlmgw
+      - firecracker-agentfs
+      - ain
+      - aegis
+      - omarchy-ai
+
+  - hostname: linux-cpu-02
+    ip: 10.0.4.11
+    ssh_user: admin
+    ram_gb: 32
+    kvm_enabled: true
+    role: sandbox_overflow
+    services:
+      - firecracker-agentfs
+      - ain
+      - aegis
