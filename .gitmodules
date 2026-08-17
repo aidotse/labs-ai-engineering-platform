@@ -73,6 +73,3 @@
 [submodule "tnt"]
 	path = tnt
 	url = https://github.com/mitkox/tnt.git
-[submodule "vllm-turboquant"]
-	path = vllm-turboquant
-	url = https://github.com/mitkox/vllm-turboquant.git
