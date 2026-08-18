@@ -315,12 +315,14 @@ def hosts_running(ctx: Ctx, service: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 NATIVE_VLLM_IMAGES = {
-    # Both confirmed to exist on Docker Hub. No entry for "intel"
+    # Both are the vLLM project's own official images (not third-party
+    # vendor builds), versioned in lockstep with vLLM releases -- confirmed
+    # via Docker Hub, currently up to v0.27.1. No entry for "intel"
     # (Gaudi/Habana): no pre-built image exists for it anywhere; that needs
     # its own from-source build (HabanaAI/vllm-fork or upstream vLLM's
     # requirements/hpu.txt), not something this script automates.
     "nvidia": "vllm/vllm-openai:latest",
-    "amd": "rocm/vllm:rocm7.14.0_rdna_ubuntu24.04_py3.14_pytorch_2.11.0_vllm_0.23.0",
+    "amd": "vllm/vllm-openai-rocm:latest",
 }
 
 
@@ -360,18 +362,16 @@ def phase1_model_serving(ctx: Ctx) -> None:
         run_remote(ctx, user, ip, "docker rm -f vllm 2>/dev/null || true", check=False)
         run_remote(
             ctx, user, ip,
-            # No "vllm serve" here -- confirmed the AMD RDNA image already
-            # bakes in ENTRYPOINT ["vllm", "serve"]; not independently
-            # verified for every possible image someone might type at the
-            # prompt above, so check its actual entrypoint if this fails
-            # with "unrecognized arguments: serve <model>".
+            # No "vllm serve" here -- confirmed both default images
+            # (vllm/vllm-openai:latest and vllm/vllm-openai-rocm:latest)
+            # bake in ENTRYPOINT ["vllm", "serve"] by reading each one's
+            # actual registry config, not assumed. Re-check with
+            # `docker inspect --format='{{.Config.Entrypoint}}' <image>`
+            # if a different image was typed at the prompt above.
             f"docker run -d --name vllm {run_args} -p 8000:8000 {image} "
             f"{shlex.quote(model)} --tensor-parallel-size {tp_size} --host 0.0.0.0 --port 8000",
         )
-        print(f"vllm started on {name}:8000 via {image} -- if it fails with "
-              f"'unrecognized arguments: serve <model>', check that image's actual entrypoint with "
-              f"`docker inspect --format='{{{{.Config.Entrypoint}}}}' {image}` and adjust. "
-              f"Health check: curl -s http://{ip}:8000/health")
+        print(f"vllm started on {name}:8000 via {image}. Health check: curl -s http://{ip}:8000/health")
 
 
 def phase1_ds4(ctx: Ctx) -> None:

@@ -92,7 +92,7 @@ Don't assume datacenter-class hardware — the GPUs an actual deployer has acces
 
 | Repo | NVIDIA (CUDA) | AMD (ROCm) | Intel (Habana/Gaudi) | Apple (Metal/CoreML) | Notes |
 |---|---|---|---|---|---|
-| `vllm` (native, Phase 1.1) | ✅ Yes — official `vllm/vllm-openai` image | ✅ Yes — official `rocm/vllm` RDNA image | ⚠️ No pre-built image; separate from-source build | ❌ No | Official, pre-built images for both NVIDIA and AMD — confirmed to exist on Docker Hub, see [Phase 1.1](#phase-1--model-serving). Gaudi2 needs its own build from `HabanaAI/vllm-fork` or upstream vLLM's `requirements/hpu.txt` — no pre-built image exists for it as of this writing. |
+| `vllm` (native, Phase 1.1) | ✅ Yes — official `vllm/vllm-openai` image | ✅ Yes — official `vllm/vllm-openai-rocm` image | ⚠️ No pre-built image; separate from-source build | ❌ No | Both are the vLLM project's own official images, versioned in lockstep with vLLM releases (confirmed via Docker Hub, currently up to v0.27.1) — see [Phase 1.1](#phase-1--model-serving). Gaudi2 needs its own build from `HabanaAI/vllm-fork` or upstream vLLM's `requirements/hpu.txt` — no pre-built image exists for it as of this writing. |
 | `ds4-zgx-gb10` (DwarfStar) | ⚠️ Builds, likely can't serve | ⚠️ Builds, likely can't serve | ❌ No | ⚠️ Primary target, but see caveat | **Builds on both NVIDIA (`make cuda-spark` for GB10, `make cuda-generic` for any local CUDA GPU — genuinely broader than AMD, which has no generic ROCm path at all, only `gfx1151`/Strix Halo) and Metal — but confirmed from `download_model.sh --help`, every model this project ships is far larger than typical desktop/laptop/edge memory: DeepSeek V4 Flash's smallest quant (`q2-imatrix`) is already 81GB on disk, "recommended for 96 and 128GB RAM machines"; PRO variants are 412–430GB; GLM-5.2's officially-validated quants (the only ones scored against the project's own test fixture) are 262–434GB.** There is no documented model variant that fits under roughly 80GB of usable memory — not on a 16–48GB GPU, not on a 32GB Jetson, not on a 16–32GB Mac laptop. This is only realistic on a genuinely high-memory machine (96GB+ unified-memory Mac Studio, or true GB10/DGX-Spark-class hardware) — treat as **not deployable** on typical laptop/workstation/edge-class hardware regardless of vendor. |
 | `SDFT` | ✅ Adaptable | ❌ No | ❌ No | ❌ No | Ships only nightly-CUDA-13.1/GB10 instructions; adapted here for stable CUDA 12.x on L4/L40S (Phase 5.1) — treat as untested, not confirmed-working. |
 | `sparser-faster-llms` | ⚠️ Uncertain on L4/L40S | ❌ No | ❌ No | ❌ No | Custom CUDA kernels documented as "designed for H100 GPUs" (Hopper, SM90). L4/L40S are Ada (SM89) — may be a real architecture mismatch, not just a version gap. |
@@ -433,35 +433,41 @@ Both NVIDIA and AMD publish official, pre-built vLLM images — no build step, a
 # NVIDIA/CUDA:
 docker pull vllm/vllm-openai:latest
 
-# AMD/RDNA (Radeon PRO/RX workstation and consumer cards):
-docker pull rocm/vllm:rocm7.14.0_rdna_ubuntu24.04_py3.14_pytorch_2.11.0_vllm_0.23.0
+# AMD/ROCm (official vLLM-maintained image, versioned in lockstep with
+# vLLM releases -- confirmed via Docker Hub, currently up to v0.27.1;
+# a separate rocm/vllm image also exists but is AMD-maintained, not the
+# vLLM project's own, and was several releases behind at last check):
+docker pull vllm/vllm-openai-rocm:latest
 ```
 
-Check what each image bakes into its entrypoint before writing a run command — confirmed the hard way that guessing wrong here produces `unrecognized arguments: serve <model>`:
+Both images bake in `Entrypoint: ["vllm", "serve"]` — confirmed by reading each one's actual config from the registry, not assumed. Don't repeat "vllm serve" in the run command for either; that produces `unrecognized arguments: serve <model>`. Re-check before trusting this for a different image or tag — a version bump could change it:
 
 ```bash
 docker inspect --format='{{.Config.Entrypoint}}' <image>
 ```
 
-Then run it. Pick a model whose quantization tag actually matches the GPU's generation — see [Which quantization format actually works on your GPU](#which-quantization-format-actually-works-on-your-gpu) before choosing an FP8-tagged repo on hardware that can't use it:
+Pick a model whose quantization tag actually matches the GPU's generation — see [Which quantization format actually works on your GPU](#which-quantization-format-actually-works-on-your-gpu) before choosing an FP8-tagged repo on hardware that can't use it:
 
 ```bash
-# NVIDIA -- if the image's own entrypoint doesn't already supply "vllm serve"
-# (check with the docker inspect command above), prefix the args below with it:
+# NVIDIA:
 docker run -d --name vllm --gpus all -p 8000:8000 \
   vllm/vllm-openai:latest \
   <your-model-repo-or-path> --tensor-parallel-size 1 --host 0.0.0.0 --port 8000
 
-# AMD/RDNA -- if the fleet has more than one GPU generation, pin to one
-# explicitly rather than letting tensor-parallel span them: confirmed that
-# splitting a model across two different architectures (e.g. RDNA3 + RDNA2)
-# segfaults during a basic kernel launch, not a subtle failure:
+# AMD/ROCm -- officially supported GPUs, confirmed against vLLM's own current
+# docs: MI200s (gfx90a), MI300 (gfx942), MI350 (gfx950), Radeon RX 7900 series
+# (gfx1100/1101), Radeon RX 9000 series (gfx1200/1201), Ryzen AI MAX/300
+# series (gfx1150/1151) -- ROCm 6.3+ (7.0+ for MI350, 7.0.2+ for Ryzen AI
+# MAX). If the fleet has more than one GPU generation, pin to one explicitly
+# rather than letting tensor-parallel span them -- confirmed that splitting a
+# model across two different architectures segfaults during a basic kernel
+# launch, not a subtle failure:
 docker run -d --name vllm \
   --device=/dev/kfd --device=/dev/dri \
   --group-add video --ipc=host --shm-size 16g \
   -e HIP_VISIBLE_DEVICES=0 \
   -p 8000:8000 \
-  rocm/vllm:rocm7.14.0_rdna_ubuntu24.04_py3.14_pytorch_2.11.0_vllm_0.23.0 \
+  vllm/vllm-openai-rocm:latest \
   <your-model-repo-or-path> --tensor-parallel-size 1 --host 0.0.0.0 --port 8000
 ```
 
@@ -481,9 +487,11 @@ curl -s http://<host>:8000/health
 
 ```yaml
 # file: openshift/vllm-deployment.yaml
-# NVIDIA shown; for AMD swap image -> the rocm/vllm tag, nvidia.com/gpu ->
-# amd.com/gpu, and add nodeSelector amd.com/gpu.family.<your-arch>: "true"
-# (or your device-plugin's label).
+# NVIDIA shown, relying on the image's own baked-in entrypoint (confirmed:
+# Entrypoint ["vllm", "serve"], same for the AMD image below) -- for AMD,
+# swap image -> vllm/vllm-openai-rocm:latest, nvidia.com/gpu -> amd.com/gpu,
+# and add nodeSelector amd.com/gpu.family.<your-arch>: "true" (or your
+# device-plugin's label).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -2049,7 +2057,7 @@ Every component in this workspace, one entry each: what it is, **when it's actua
 ```bash
 docker run -d --name vllm --device=/dev/kfd --device=/dev/dri \
   --group-add video --ipc=host --shm-size 16g -p 8000:8000 \
-  rocm/vllm:rocm7.14.0_rdna_ubuntu24.04_py3.14_pytorch_2.11.0_vllm_0.23.0 \
+  vllm/vllm-openai-rocm:latest \
   <model> --tensor-parallel-size 1 --host 0.0.0.0 --port 8000
 ```
 No rlmgw, no Envoy, no `inventory.yaml` entry required — `curl http://<host>:8000/v1/chat/completions` works immediately. Full deploy: [Phase 1.1](#phase-1--model-serving).
